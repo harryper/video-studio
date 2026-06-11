@@ -1,3 +1,4 @@
 runs/
 *.tmp
 .DS_Store
+jobs/
