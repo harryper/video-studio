@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>video composition</title>
+  <style>
+    [data-composition-id="dynamic"] {
+      width: 1080px; height: 1920px; background: #0a0e1a; color: #fff;
+      font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+      overflow: hidden;
+    }
+    .clip {
+      width: 100%; height: 100%;
+      display: flex; flex-direction: column; justify-content: center; align-items: center;
+      gap: 24px; padding: 100px 80px; box-sizing: border-box;
+      opacity: 0;
+    }
+    .line {
+      font-size: 80px; font-weight: bold; line-height: 1.3; text-align: center;
+      letter-spacing: 4px;
+    }
+  </style>
+</head>
+<body>
+  <div data-composition-id="dynamic"
+       data-width="1080" data-height="1920"
+       data-start="0" data-duration="30">
+    <div id="card-1" class="clip" data-track-index="0" data-start="0.0" data-duration="6.0" style="background:linear-gradient(135deg, #1e3a8a 0%, #7c3aed 100%);">
+      <div class="line">你刷过那些 AI 名词吧。</div><div class="line">Token、Embeddi</div><div class="line">ng、Attention、</div><div class="line">Context、Fine…</div>
+    </div>
+    <div id="card-2" class="clip" data-track-index="0" data-start="6.0" data-duration="6.0" style="background:linear-gradient(135deg, #7c3aed 0%, #ec4899 100%);">
+      <div class="line">英文一串，看完就跑。其实就</div><div class="line"> 5 个，记完够用。Tok</div><div class="line">en 不是字，是编号。</div>
+    </div>
+    <div id="card-3" class="clip" data-track-index="0" data-start="12.0" data-duration="6.0" style="background:linear-gradient(135deg, #ec4899 0%, #f59e0b 100%);">
+      <div class="line">你写一句你好，AI 切成几</div><div class="line">个编号塞进去。Embedd</div><div class="line">ing 是把意思变成坐标，</div><div class="line">意思近的词靠得近，反义词…</div>
+    </div>
+    <div id="card-4" class="clip" data-track-index="0" data-start="18.0" data-duration="6.0" style="background:linear-gradient(135deg, #f59e0b 0%, #10b981 100%);">
+      <div class="line">Attention 是挑重</div><div class="line">点，模型看一眼就知道该注意</div><div class="line">哪。Context 是上下</div><div class="line">文，给它的背景资料。给长…</div>
+    </div>
+    <div id="card-5" class="clip" data-track-index="0" data-start="24.0" data-duration="6.0" style="background:linear-gradient(135deg, #10b981 0%, #1e3a8a 100%);">
+      <div class="line">Fine-tune 是把会</div><div class="line">聊天的模型按你的行业再喂一</div><div class="line">轮，让它变成你行业的助理。</div><div class="line">剩下 RAG、Agent…</div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/gsap@3.14.2/dist/gsap.min.js"></script>
+  <script>
+    window.__timelines = window.__timelines || {};
+    const tl = gsap.timeline({ paused: true });
+    tl.to('#card-1', { opacity: 1, duration: 0.3 }, 0.0);
+    tl.to('#card-1', { opacity: 0, duration: 0.3 }, 5.7);
+    tl.to('#card-2', { opacity: 1, duration: 0.3 }, 6.0);
+    tl.to('#card-2', { opacity: 0, duration: 0.3 }, 11.7);
+    tl.to('#card-3', { opacity: 1, duration: 0.3 }, 12.0);
+    tl.to('#card-3', { opacity: 0, duration: 0.3 }, 17.7);
+    tl.to('#card-4', { opacity: 1, duration: 0.3 }, 18.0);
+    tl.to('#card-4', { opacity: 0, duration: 0.3 }, 23.7);
+    tl.to('#card-5', { opacity: 1, duration: 0.3 }, 24.0);
+    window.__timelines["dynamic"] = tl;
+  </script>
+</body>
+</html>
