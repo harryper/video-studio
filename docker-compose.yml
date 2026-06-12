@@ -1,0 +1,52 @@
+services:
+  video-studio-web:
+    build: .
+    container_name: video-studio-web
+    restart: unless-stopped
+    ports:
+      - "9998:9998"
+    volumes:
+      # Source code bind-mounted for live edits during dev.
+      - .:/app
+      # Read-only access to workspace for cross-skill scripts (e.g. Pexels key
+      # fallback) and to public-downloads for any future publishing.
+      - /root/.openclaw/workspace:/root/.openclaw/workspace:ro
+      # Host-side logs are picked up by logrotate on the host.
+      - /var/log/video-studio:/app/logs
+      # Read-only access to voice-studio for shared scripts (minimax_tts.py,
+      # voice_registry.json). The narrate daemon reads these by absolute
+      # path ($VOICE_STUDIO_DIR), not via the container's PATH.
+      - /root/.openclaw/workspace/skills/voice-studio:/root/.openclaw/workspace/skills/voice-studio:ro
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PATH=/usr/bin:/bin:/usr/local/bin
+      - VOICE_STUDIO_DIR=/root/.openclaw/workspace/skills/voice-studio
+      - GUNICORN_WORKERS=2
+      - GUNICORN_TIMEOUT=60
+      - GUNICORN_GRACEFUL_TIMEOUT=10
+      - GUNICORN_KEEPALIVE=5
+      - GUNICORN_MAX_REQUESTS=500
+      - GUNICORN_MAX_REQUESTS_JITTER=100
+      - GUNICORN_LOG_LEVEL=info
+    deploy:
+      resources:
+        limits:
+          cpus: "1.0"
+          memory: 512M
+          pids: 128
+        reservations:
+          cpus: "0.1"
+          memory: 64M
+    ulimits:
+      nofile:
+        soft: 8192
+        hard: 8192
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 15s
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "-m", "3", "http://127.0.0.1:9998/api/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
