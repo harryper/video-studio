@@ -1,0 +1,538 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>video-studio · 抖音短视频自动创作台</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  :root {
+    --bg: #0f1115;
+    --surface-1: #181b22;
+    --surface-2: #1f232c;
+    --surface-3: #262b35;
+    --text-1: #e6e8ed;
+    --text-2: #aab0bd;
+    --text-3: #6c7280;
+    --primary: #ff4d6d;
+    --primary-hover: #ff6e8a;
+    --success: #4ade80;
+    --warning: #fbbf24;
+    --danger: #f87171;
+    --border: #2a2f3a;
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    background: var(--bg);
+    color: var(--text-1);
+    line-height: 1.6;
+    min-height: 100vh;
+  }
+  .layout {
+    display: grid;
+    grid-template-columns: 360px 1fr;
+    grid-template-rows: auto 1fr;
+    grid-template-areas:
+      "header header"
+      "sidebar main";
+    height: 100vh;
+  }
+  header {
+    grid-area: header;
+    background: var(--surface-1);
+    border-bottom: 1px solid var(--border);
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  header h1 {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text-1);
+  }
+  header h1 span.emoji { margin-right: 8px; }
+  .health { font-size: 12px; color: var(--text-3); display: flex; align-items: center; gap: 8px; }
+  .health .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--success); }
+  .health.warn .dot { background: var(--warning); }
+  .health.error .dot { background: var(--danger); }
+  aside {
+    grid-area: sidebar;
+    background: var(--surface-1);
+    border-right: 1px solid var(--border);
+    padding: 20px;
+    overflow-y: auto;
+  }
+  main {
+    grid-area: main;
+    overflow-y: auto;
+    padding: 20px 24px;
+  }
+  label { display: block; font-size: 12px; color: var(--text-2); margin-bottom: 6px; font-weight: 500; }
+  input, select, textarea {
+    width: 100%;
+    background: var(--surface-2);
+    color: var(--text-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px 10px;
+    font-size: 14px;
+    font-family: inherit;
+  }
+  input:focus, select:focus, textarea:focus { outline: 1px solid var(--primary); }
+  textarea { min-height: 80px; resize: vertical; }
+  .form-group { margin-bottom: 14px; }
+  button {
+    background: var(--surface-3);
+    color: var(--text-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 8px 14px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  button:hover { background: var(--border); }
+  button.primary {
+    background: var(--primary);
+    color: white;
+    border-color: var(--primary);
+    font-weight: 600;
+  }
+  button.primary:hover { background: var(--primary-hover); }
+  button.full { width: 100%; padding: 10px; }
+  button.small { padding: 4px 10px; font-size: 12px; }
+  button:disabled { opacity: 0.5; cursor: not-allowed; }
+  .section-label {
+    font-size: 13px;
+    color: var(--text-2);
+    font-weight: 600;
+    margin-bottom: 8px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .job-card {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px;
+    margin-bottom: 8px;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .job-card:hover { border-color: var(--primary); }
+  .job-card.active { border-color: var(--primary); background: var(--surface-3); }
+  .job-card .theme { font-size: 13px; font-weight: 500; margin-bottom: 4px; }
+  .job-card .meta { display: flex; justify-content: space-between; font-size: 11px; color: var(--text-3); }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    font-weight: 500;
+  }
+  .badge.pending { background: #3b4252; color: #aab0bd; }
+  .badge.ready_script, .badge.scripted { background: #2d4a5e; color: #6cb6ff; }
+  .badge.rendered { background: #4a3a5e; color: #c084fc; }
+  .badge.final { background: #1e4a32; color: var(--success); }
+  .badge.error { background: #5a2a2a; color: var(--danger); }
+  .badge.cancelled { background: #3a3a3a; color: #888; }
+  .progress-bar {
+    height: 4px;
+    background: var(--surface-3);
+    border-radius: 2px;
+    overflow: hidden;
+    margin: 8px 0;
+  }
+  .progress-bar > div {
+    height: 100%;
+    background: var(--primary);
+    transition: width 0.3s;
+  }
+  .stage {
+    display: inline-block;
+    padding: 3px 10px;
+    background: var(--surface-3);
+    border-radius: 12px;
+    font-size: 12px;
+    color: var(--text-2);
+  }
+  .eta { font-size: 12px; color: var(--text-3); }
+  .detail-panel { display: none; }
+  .detail-panel.active { display: block; }
+  .empty { color: var(--text-3); text-align: center; padding: 40px 20px; font-size: 14px; }
+  .script-box {
+    background: var(--surface-2);
+    padding: 14px;
+    border-radius: var(--radius);
+    max-height: 240px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    font-size: 13px;
+    line-height: 1.7;
+    margin-top: 6px;
+    color: var(--text-1);
+  }
+  .meta-row {
+    display: flex;
+    gap: 16px;
+    margin-top: 10px;
+    font-size: 12px;
+    color: var(--text-3);
+    flex-wrap: wrap;
+  }
+  .meta-row span strong { color: var(--text-2); font-weight: 500; }
+  video { width: 100%; border-radius: var(--radius); background: #000; }
+  .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+  .error-box {
+    background: #3a1f1f;
+    border: 1px solid var(--danger);
+    border-radius: var(--radius);
+    padding: 10px 14px;
+    color: var(--danger);
+    font-size: 13px;
+    margin-top: 10px;
+  }
+  .pill {
+    display: inline-block;
+    background: var(--surface-3);
+    color: var(--text-2);
+    padding: 2px 8px;
+    border-radius: 10px;
+    font-size: 11px;
+    margin-left: 6px;
+  }
+  .block { margin-bottom: 20px; }
+</style>
+</head>
+<body>
+<div class="layout">
+  <header>
+    <h1><span class="emoji">🎬</span>video-studio · 抖音短视频自动创作台</h1>
+    <div class="health" id="healthBar"><span class="dot"></span><span id="healthText">检查中…</span></div>
+  </header>
+
+  <aside>
+    <div class="block">
+      <div class="section-label">📝 新建视频任务</div>
+      <div class="form-group">
+        <label>主题（反常识 / 数字冲击 / 冷知识）</label>
+        <textarea id="themeInput" placeholder="例：微波炉不会让食物带上辐射&#10;例：你身上 3 公斤细菌&#10;例：35 岁危机是伪命题"></textarea>
+      </div>
+      <div class="form-group">
+        <label>画幅</label>
+        <select id="aspectRatio">
+          <option value="16:9">16:9（横版 / 1920×1080）</option>
+          <option value="9:16">9:16（竖版抖音 / 1080×1920）</option>
+          <option value="1:1">1:1（方形 / 1080×1080）</option>
+        </select>
+      </div>
+      <button id="createBtn" class="primary full">创建视频任务</button>
+    </div>
+
+    <div class="block">
+      <div class="section-label">🎞 任务列表 <span id="jobCount" class="pill">0</span></div>
+      <div id="jobList" class="job-list"></div>
+    </div>
+  </aside>
+
+  <main>
+    <div id="emptyState" class="empty">👈 在左侧输入主题、点击「创建视频任务」开始</div>
+
+    <div id="detailPanel" class="detail-panel">
+      <div class="block">
+        <div class="section-label">
+          <span id="detailTheme">—</span>
+          <span class="stage" id="detailStage">待生成</span>
+          <span class="eta" id="detailEta">~ 5-7 分钟</span>
+        </div>
+        <div class="progress-bar"><div id="detailProgress" style="width:0%"></div></div>
+        <div class="meta-row">
+          <span><strong>ID:</strong> <span id="detailId">—</span></span>
+          <span><strong>画幅:</strong> <span id="detailAspect">—</span></span>
+          <span><strong>字数:</strong> <span id="detailChars">—</span></span>
+          <span><strong>创建:</strong> <span id="detailCreated">—</span></span>
+        </div>
+        <div class="actions">
+          <button class="small" id="rerunScriptBtn">重跑脚本</button>
+          <button class="small" id="rerunRenderBtn">重跑渲染</button>
+          <button class="small" id="rerunNarrateBtn">重跑配音</button>
+          <button class="small" id="archiveBtn" style="margin-left:auto">📦 归档</button>
+          <button class="small" id="deleteBtn" style="color:var(--danger)">🗑 删除</button>
+        </div>
+        <div id="errorBox" class="error-box" style="display:none"></div>
+      </div>
+
+      <div class="block" id="scriptBlock" style="display:none">
+        <div class="section-label">📜 旁白稿</div>
+        <div class="script-box" id="scriptText"></div>
+      </div>
+
+      <div class="block" id="renderedBlock" style="display:none">
+        <div class="section-label">🎞 已渲染（无配音）</div>
+        <video id="renderedPlayer" controls></video>
+        <div class="meta-row" id="renderedMeta"></div>
+      </div>
+
+      <div class="block" id="finalBlock" style="display:none">
+        <div class="section-label">🎬 成品（已配音 + BGM）</div>
+        <video id="finalPlayer" controls></video>
+        <div class="actions">
+          <button class="small" id="copyUrlBtn">复制 COS 链接</button>
+          <a class="small" id="downloadLink" download>下载</a>
+        </div>
+        <div class="meta-row" id="finalMeta"></div>
+      </div>
+
+      <div class="block">
+        <div class="section-label">📋 执行日志</div>
+        <div class="script-box" id="logBox" style="max-height:160px;font-size:12px;color:var(--text-3)"></div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script>
+const API = '';  // 同源
+let currentJob = null;
+let pollTimer = null;
+
+const STATE_LABEL = {
+  pending: '待生成',
+  ready_script: '已写稿',
+  rendered: '已渲染',
+  final: '已完成',
+  error: '失败',
+  cancelled: '已取消',
+};
+
+const STATE_PROGRESS = {
+  pending: 10,
+  ready_script: 35,
+  rendered: 70,
+  final: 100,
+  error: 0,
+  cancelled: 0,
+};
+
+// ── 健康检查 ─────────────────────────────────────────────────────
+async function checkHealth() {
+  try {
+    const r = await fetch(API + '/api/health');
+    const d = await r.json();
+    document.getElementById('healthText').textContent = `${d.app} v${d.version} · ${d.jobs_count} jobs`;
+  } catch (e) {
+    document.getElementById('healthBar').classList.add('error');
+    document.getElementById('healthText').textContent = '服务不可达';
+  }
+}
+checkHealth();
+setInterval(checkHealth, 30000);
+
+// ── 任务列表 ─────────────────────────────────────────────────────
+async function refreshJobs() {
+  try {
+    const r = await fetch(API + '/api/jobs');
+    const jobs = await r.json();
+    renderJobList(jobs);
+    if (currentJob) {
+      const found = jobs.find(j => j.id === currentJob.id);
+      if (found) renderDetail(found);
+    }
+  } catch (e) {
+    console.error('refreshJobs failed', e);
+  }
+}
+
+function renderJobList(jobs) {
+  document.getElementById('jobCount').textContent = jobs.length;
+  const list = document.getElementById('jobList');
+  if (jobs.length === 0) {
+    list.innerHTML = '<div class="empty" style="padding:20px 0">暂无任务</div>';
+    return;
+  }
+  list.innerHTML = jobs.map(j => {
+    const status = j.status || 'pending';
+    const theme = (j.theme || '').slice(0, 30);
+    return `
+      <div class="job-card ${currentJob && currentJob.id === j.id ? 'active' : ''}" data-id="${j.id}">
+        <div class="theme">${escapeHtml(theme)}</div>
+        <div class="meta">
+          <span class="badge ${status}">${STATE_LABEL[status] || status}</span>
+          <span>${(j.created_at || '').slice(5, 16)}</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+  list.querySelectorAll('.job-card').forEach(el => {
+    el.addEventListener('click', () => {
+      const job = jobs.find(j => j.id === el.dataset.id);
+      if (job) renderDetail(job);
+    });
+  });
+}
+
+// ── 详情面板 ─────────────────────────────────────────────────────
+function renderDetail(job) {
+  currentJob = job;
+  document.getElementById('emptyState').style.display = 'none';
+  document.getElementById('detailPanel').classList.add('active');
+
+  const status = job.status || 'pending';
+  document.getElementById('detailTheme').textContent = job.theme || '—';
+  document.getElementById('detailStage').textContent = STATE_LABEL[status] || status;
+  document.getElementById('detailStage').className = 'stage badge ' + status;
+  document.getElementById('detailEta').textContent = status === 'final' ? '✅ 完成' : `~ 5-7 分钟`;
+  document.getElementById('detailProgress').style.width = (STATE_PROGRESS[status] || 0) + '%';
+  document.getElementById('detailId').textContent = job.id || '—';
+  const aspect = (job.render && job.render.aspect_ratio) || '—';
+  document.getElementById('detailAspect').textContent = aspect;
+  const chars = (job.script_meta && job.script_meta.char_count) || 0;
+  document.getElementById('detailChars').textContent = chars || '—';
+  document.getElementById('detailCreated').textContent = (job.created_at || '').slice(0, 16) || '—';
+
+  // 脚本
+  if (job.script) {
+    document.getElementById('scriptBlock').style.display = 'block';
+    document.getElementById('scriptText').textContent = job.script;
+  } else {
+    document.getElementById('scriptBlock').style.display = 'none';
+  }
+
+  // 已渲染
+  if (job.render && (job.render.mp4_url || job.render.mp4_path)) {
+    document.getElementById('renderedBlock').style.display = 'block';
+    const player = document.getElementById('renderedPlayer');
+    player.src = job.render.mp4_url || ('/' + (job.render.mp4_path || '').replace(/^.*skills\/video-studio\//, ''));
+    document.getElementById('renderedMeta').innerHTML = `
+      <span><strong>时长:</strong> ${job.render.duration_sec || '—'}s</span>
+      <span><strong>FPS:</strong> ${job.render.fps || '—'}</span>
+      <span><strong>尺寸:</strong> ${job.render.width}×${job.render.height}</span>
+    `;
+  } else {
+    document.getElementById('renderedBlock').style.display = 'none';
+  }
+
+  // 成品
+  if (job.final && (job.final.mp4_url || job.final.mp4_path)) {
+    document.getElementById('finalBlock').style.display = 'block';
+    const player = document.getElementById('finalPlayer');
+    player.src = job.final.mp4_url || ('/' + (job.final.mp4_path || '').replace(/^.*skills\/video-studio\//, ''));
+    document.getElementById('finalMeta').innerHTML = `
+      <span><strong>时长:</strong> ${job.final.duration_sec || '—'}s</span>
+      <span><strong>大小:</strong> ${formatBytes(job.final.size_bytes || 0)}</span>
+    `;
+    document.getElementById('downloadLink').href = player.src;
+  } else {
+    document.getElementById('finalBlock').style.display = 'none';
+  }
+
+  // 错误
+  if (job.error) {
+    document.getElementById('errorBox').style.display = 'block';
+    document.getElementById('errorBox').textContent = '❌ ' + job.error;
+  } else {
+    document.getElementById('errorBox').style.display = 'none';
+  }
+
+  // 日志
+  const logs = job.logs || [];
+  document.getElementById('logBox').textContent = logs.slice(-20).join('\n') || '（暂无）';
+
+  // 重新激活 job card
+  document.querySelectorAll('.job-card').forEach(el => {
+    el.classList.toggle('active', el.dataset.id === job.id);
+  });
+}
+
+// ── 创建任务 ─────────────────────────────────────────────────────
+document.getElementById('createBtn').addEventListener('click', async () => {
+  const theme = document.getElementById('themeInput').value.trim();
+  if (!theme) { alert('请输入主题'); return; }
+  const aspect_ratio = document.getElementById('aspectRatio').value;
+  const btn = document.getElementById('createBtn');
+  btn.disabled = true;
+  btn.textContent = '创建中…';
+  try {
+    const r = await fetch(API + '/api/jobs', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({theme, aspect_ratio, mode: 'video'}),
+    });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || '创建失败');
+    document.getElementById('themeInput').value = '';
+    await refreshJobs();
+    setTimeout(() => renderDetail(d.job), 200);
+  } catch (e) {
+    alert('创建失败: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '创建视频任务';
+  }
+});
+
+// ── 操作按钮 ─────────────────────────────────────────────────────
+document.getElementById('rerunScriptBtn').addEventListener('click', async () => {
+  if (!currentJob) return;
+  await fetch(API + '/__internal/touch-trigger', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({trigger: 'script'}),
+  });
+  await refreshJobs();
+});
+document.getElementById('rerunRenderBtn').addEventListener('click', async () => {
+  if (!currentJob) return;
+  await fetch(API + '/api/jobs/' + currentJob.id + '/render', {method: 'POST'});
+  await refreshJobs();
+});
+document.getElementById('rerunNarrateBtn').addEventListener('click', async () => {
+  if (!currentJob) return;
+  await fetch(API + '/api/jobs/' + currentJob.id + '/narrate', {method: 'POST'});
+  await refreshJobs();
+});
+document.getElementById('archiveBtn').addEventListener('click', async () => {
+  if (!currentJob) return;
+  if (!confirm('确认归档此任务？')) return;
+  await fetch(API + '/api/jobs/' + currentJob.id + '/archive', {method: 'POST'});
+  currentJob = null;
+  document.getElementById('detailPanel').classList.remove('active');
+  document.getElementById('emptyState').style.display = 'block';
+  await refreshJobs();
+});
+document.getElementById('deleteBtn').addEventListener('click', async () => {
+  if (!currentJob) return;
+  if (!confirm('确认删除此任务？产物也会被清理。')) return;
+  await fetch(API + '/api/jobs/' + currentJob.id, {method: 'DELETE'});
+  currentJob = null;
+  document.getElementById('detailPanel').classList.remove('active');
+  document.getElementById('emptyState').style.display = 'block';
+  await refreshJobs();
+});
+document.getElementById('copyUrlBtn').addEventListener('click', () => {
+  const player = document.getElementById('finalPlayer');
+  if (!player.src) return;
+  navigator.clipboard.writeText(player.src).then(() => {
+    document.getElementById('copyUrlBtn').textContent = '✅ 已复制';
+    setTimeout(() => document.getElementById('copyUrlBtn').textContent = '复制 COS 链接', 2000);
+  });
+});
+
+// ── 工具函数 ─────────────────────────────────────────────────────
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function formatBytes(b) {
+  if (b < 1024) return b + 'B';
+  if (b < 1048576) return (b/1024).toFixed(1) + 'KB';
+  return (b/1048576).toFixed(1) + 'MB';
+}
+
+// ── 启动轮询 ─────────────────────────────────────────────────────
+refreshJobs();
+pollTimer = setInterval(refreshJobs, 5000);
+</script>
+</body>
+</html>

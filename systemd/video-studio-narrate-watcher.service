@@ -1,0 +1,10 @@
+[Unit]
+Description=Process pending video-studio narrate jobs (TTS + BGM + ffmpeg merge)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/.openclaw/workspace/skills/video-studio
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/root/.openclaw/workspace/skills/video-studio/scripts:/root/.openclaw/workspace/skills/voice-studio/scripts:/root/.openclaw/workspace/public-downloads
+ExecStart=/usr/bin/python3 /root/.openclaw/workspace/skills/video-studio/scripts/process_video_narrate_jobs.py
