@@ -1,4 +1,41 @@
+# Runtime artifacts
+jobs/
+archive/
 runs/
+logs/
+*.log
+*.pid
+*.sock
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Media outputs
+*.mp3
+*.mp4
+*.wav
+*.m4a
+*.ogg
+*.png
+*.jpg
+*.jpeg
+*.webp
+*.gif
+
+# Secrets
+*_api_key.txt
+azure_speech_key.txt
+config.json
+
+# Triggers and locks (host-side systemd touches these)
+.video-*-trigger
+.*.lock
+.*.lastrun
+
+# Misc
+tmp/
 *.tmp
 .DS_Store
-jobs/
+backups/
