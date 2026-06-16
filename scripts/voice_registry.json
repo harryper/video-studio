@@ -1,0 +1,16 @@
+{
+  "Chinese (Mandarin)_Radio_Host": {
+    "display_name": "电台男主播",
+    "default_speed": 1.0,
+    "description": "voice-studio 科普/叙事 (与 harryper/video-studio 共享音色)",
+    "enabled": true,
+    "primary_use": "voice"
+  },
+  "azure_yunze_clone": {
+    "display_name": "云泽克隆",
+    "default_speed": 0.9,
+    "description": "voice-studio 默认 (助眠/慢节奏, 与 minimax_tts.py DEFAULT_SPEED 对齐)",
+    "enabled": true,
+    "primary_use": "voice"
+  }
+}

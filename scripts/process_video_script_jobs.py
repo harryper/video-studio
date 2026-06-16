@@ -32,14 +32,17 @@ RUNS_DIR = Path("/root/.openclaw/workspace/skills/video-studio/runs")
 LOCK_PATH = SKILL_DIR / ".video-script-writer.lock"
 NODE = Path("/usr/bin/node")
 OPENCLAW = Path("/usr/lib/node_modules/openclaw/openclaw.mjs")
-# Char-count tolerance band. The style guide targets 760-840 chars
-# (see reference-style-video.md), but LLM output is noisy — 1080 chars
-# is well within an acceptable range and the existing 700-900 cap was
-# rejecting perfectly good drafts. Widened to 600-1500.
-MIN_SCRIPT_CHARS = 600
-MAX_SCRIPT_CHARS = 1500
-DEFAULT_TARGET_SECONDS = 150
-ESTIMATED_CHARS_PER_SECOND = 5.5
+# Char-count tolerance band. The style guide targets 560-640 chars
+# (see reference-style-video.md, 抖音科普短片节奏更紧凑), but LLM output
+# is noisy — widened to 450-900.
+MIN_SCRIPT_CHARS = 450
+MAX_SCRIPT_CHARS = 900
+DEFAULT_TARGET_SECONDS = 110
+# Empirically calibrated from MiniMax-TTS (model=speech-2.8-hd) Radio_Host:
+# 实测 628 字 / speed 1.15 → 112.9s (5.56 chars/sec), 644 字 → 110.1s (5.85)。
+# 中文 TTS 实际节奏受标点/换气影响大；为了不过分欠长，多留 4% 余量。
+ESTIMATED_CHARS_PER_SECOND = 5.4
+DRIFT_SAFETY_SECONDS = 5
 
 SCRIPT_TRIGGER = SKILL_DIR / ".video-script-trigger"
 RENDER_TRIGGER = SKILL_DIR / ".video-render-trigger"
@@ -243,16 +246,52 @@ def finalize_from_script_file(job):
         return False
     if len(script) < MIN_SCRIPT_CHARS or len(script) > MAX_SCRIPT_CHARS:
         return False
-    # Calibrated from actual Radio_Host output at speed 1.0.
+    # RC2/RC5: prefer the rate measured by the last few final jobs (narrate
+    # daemon writes script_meta.actual_rate = voice_seconds/char_count, i.e.
+    # seconds per character). We need chars per second for the duration
+    # formula, so flip it. Cold start falls back to the calibrated
+    # 5.4 chars/sec × speed constant.
     char_count = len(script)
-    target_seconds = round(char_count / ESTIMATED_CHARS_PER_SECOND)
+    speed = float((job.get("audio") or {}).get("speed", 1.0))
+    history_sec_per_char = []
+    try:
+        for p in sorted(JOBS_DIR.glob("v_*.json"))[-10:]:
+            try:
+                d = json.loads(p.read_text(encoding="utf-8"))
+                spc = (d.get("script_meta") or {}).get("actual_rate")
+                if (
+                    d.get("status") == "final"
+                    and isinstance(spc, (int, float))
+                    and spc > 0
+                ):
+                    history_sec_per_char.append(float(spc))
+            except (OSError, json.JSONDecodeError, ValueError):
+                continue
+    except OSError:
+        pass
+    if history_sec_per_char:
+        # 1 / mean(sec/char) = mean char/sec, but to stay robust against
+        # outliers we convert each measurement back to char/sec then average.
+        cps = [1.0 / s for s in history_sec_per_char]
+        effective_rate = sum(cps) / len(cps)
+    else:
+        effective_rate = ESTIMATED_CHARS_PER_SECOND * speed
+    target_seconds = round(char_count / effective_rate)
+    # Rate is now data-driven; keep a small 2% + 2s tail for sentence-final
+    # pauses instead of the old 8% + 5s double buffer.
+    video_duration_sec = max(
+        round(target_seconds * 1.02) + 2, 30,
+    )
     job["status"] = "ready_script"
     job["script"] = script
     job["script_meta"] = {
         "char_count": char_count,
         "target_seconds": target_seconds,
+        "effective_rate": effective_rate,
         "actual_seconds": None,
     }
+    # 单一时间预算：render 读这个值，TTS 后用 ffprobe 校准，drift 控制在 ±1s
+    job.setdefault("render", {})["duration_sec"] = video_duration_sec
     job["error"] = None
     job["updated_at"] = now_iso()
     save_job(job)

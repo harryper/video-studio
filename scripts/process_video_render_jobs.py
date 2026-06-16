@@ -24,13 +24,21 @@ from datetime import datetime
 from pathlib import Path
 
 
+def escape_html(s):
+    return (s.replace("&", "&amp;")
+             .replace("<", "&lt;")
+             .replace(">", "&gt;")
+             .replace('"', "&quot;")
+             .replace("'", "&#39;"))
+
+
 SKILL_DIR = Path(__file__).resolve().parents[1]
 WORKSPACE_DIR = SKILL_DIR.parents[1]
 JOBS_DIR = SKILL_DIR / "jobs" / "video"
 VIDEO_RUNS_DIR = Path("/root/.openclaw/workspace/skills/video-studio/runs")
 PLACEHOLDER_HTML = SKILL_DIR / "templates" / "video_placeholder.html"
 VIDEO_STYLE_HELPER = Path("/root/.openclaw/workspace/skills/video-studio/reference-style-video.md")
-UPLOAD_SCRIPT = SKILL_DIR / "scripts" / "upload_to_cos.py"
+UPLOAD_SCRIPT = SKILL_DIR / "scripts" / "upload_to_oss.py"
 IMAGE_GEN_SCRIPT = SKILL_DIR / "scripts" / "minimax_image_gen.py"
 PEXELS_IMAGE_SCRIPT = SKILL_DIR / "scripts" / "pexels_image.py"
 PEXELS_VIDEO_SCRIPT = SKILL_DIR / "scripts" / "pexels_video.py"
@@ -46,8 +54,11 @@ NARRATE_TRIGGER = SKILL_DIR / ".video-narrate-trigger"
 LAST_RUN_MARKER = SKILL_DIR / ".video-render-writer.lastrun"
 LOG_FILE = Path("/var/log/video-studio/video-render-watcher.log")
 
-# 150s at 15fps is 2250 frames and can take 10-15 minutes on this VM.
-RENDER_TIMEOUT_SEC = 1800
+# 150s at 15fps is 2250 frames and can take 10-30 minutes on this VM
+# depending on host load. Bumped to 60 min after 30 min timeouts during
+# re-render with alignment (machine was contended with the openclaw
+# memory-core embedder).
+RENDER_TIMEOUT_SEC = 3600
 
 
 def log(msg):
@@ -98,7 +109,7 @@ def safe_slug(name):
 
 
 def upload_mp4(local_path, slug, short_id, kind):
-    """Upload to COS and return the pre-signed URL."""
+    """Upload to R2 and return the pre-signed URL."""
     filename = f"video-{slug}-{short_id}-{kind}.mp4"
     object_key = f"{datetime.now().strftime('%Y-%m-%d')}/video-studio/{filename}"
     cmd = [
@@ -144,22 +155,71 @@ def render_placeholder(
     images_dir.mkdir(exist_ok=True)
     videos_dir = render_dir / "videos"
     videos_dir.mkdir(exist_ok=True)
-    # About 10 seconds per scene, bounded to keep asset generation reasonable.
-    n_scenes = min(18, max(10, round(total_duration / 10)))
-    chunks = split_script_to_cards(script_text, n_cards=n_scenes)
-    log(f"  using {n_scenes} scenes for {len(script_text)} chars")
+    # ~6s per scene now (was 10s) — matches the 抖音短片节奏 of the
+    # reference video. 总时长除以 6 而不是 10，scene 数会更多、字幕更密。
+    n_scenes = min(22, max(15, round(total_duration / 6)))
+    # RC3 pipeline-order fix: cache chunks AND n_scenes so the post-narrate
+    # re-render uses the same split as the pre-narrate render. The
+    # re-render sees total_duration = voice_duration (could be ±10s off
+    # from the pre-narrate estimate), and n_scenes = round(total/6)
+    # would shift, breaking the scene_times alignment lookup. The first
+    # render writes the cache, every subsequent render reads it.
+    chunks_cache = render_dir / "chunks.json"
+    if chunks_cache.exists():
+        try:
+            cached = json.loads(chunks_cache.read_text(encoding="utf-8"))
+            if isinstance(cached, list) and all(isinstance(c, str) for c in cached):
+                chunks = cached
+                if len(chunks) != n_scenes:
+                    log(f"  using cached n_chunks={len(chunks)} (overrides computed n_scenes={n_scenes})")
+                    n_scenes = len(chunks)
+            else:
+                chunks = split_script_to_cards(script_text, n_cards=n_scenes)
+                chunks_cache.write_text(json.dumps(chunks, ensure_ascii=False), encoding="utf-8")
+        except (OSError, json.JSONDecodeError):
+            chunks = split_script_to_cards(script_text, n_cards=n_scenes)
+            chunks_cache.write_text(json.dumps(chunks, ensure_ascii=False), encoding="utf-8")
+    else:
+        chunks = split_script_to_cards(script_text, n_cards=n_scenes)
+        chunks_cache.write_text(json.dumps(chunks, ensure_ascii=False), encoding="utf-8")
+    log(f"  using {n_scenes} scenes for {len(script_text)} chars ({total_duration}s)")
     log(f"  generating {len(chunks)} scene images (Pexels → MiniMax → gradient)...")
+
+    # 1a. LLM 关键词抽取（一次性批量调用，缓存）
+    # 让"大脑六成是脂肪"配出大脑图而不是饮料杯
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from extract_scene_keywords import extract_keywords
+        keywords_per_scene = extract_keywords(job_id, theme, chunks)
+        if any(keywords_per_scene):
+            log(f"  ✓ LLM extracted keywords for {sum(1 for k in keywords_per_scene if k)}/{len(chunks)} scenes")
+    except Exception as e:
+        log(f"  ⚠ keyword extraction failed: {e}; using regex fallback")
+        keywords_per_scene = [[] for _ in chunks]
+
     media_items = []
+    # Job seed for Pexels offset (per-scene variety, same job reruns are idempotent)
+    try:
+        job_seed = sum(ord(c) for c in job_id) % 7
+    except Exception:
+        job_seed = 0
     for i, chunk in enumerate(chunks):
-        query = extract_pexels_query(chunk, theme, i)
+        # 优先用 LLM 关键词；空时回落到正则启发式
+        kws = keywords_per_scene[i] if i < len(keywords_per_scene) else []
+        if kws:
+            # 多关键词中选第一个最具体的；offset 让每个场景拿不同结果
+            base_query = kws[0]
+        else:
+            base_query = extract_pexels_query(chunk, theme, i)
+        offset = (i * 3 + job_seed) % 5
         # Use real motion footage for roughly one third of the scenes.
         if i % 3 == 1:
             video_path = videos_dir / f"scene_{i+1}.mp4"
             if (
                 (video_path.exists() and video_path.stat().st_size > 100_000)
-                or try_pexels_video(query, video_path, width, height)
+                or try_pexels_video(base_query, video_path, width, height, offset=offset)
             ):
-                log(f"  scene {i+1}: pexels video (q={query!r})")
+                log(f"  scene {i+1}: pexels video (q={base_query!r}, offset={offset})")
                 media_items.append(("video", video_path))
                 continue
         img_path = images_dir / f"scene_{i+1}.jpg"
@@ -167,11 +227,18 @@ def render_placeholder(
             log(f"  scene {i+1}: cached")
             media_items.append(("image", img_path))
             continue
-        # 1. Try Pexels
-        if try_pexels_image(query, img_path, width=width, height=height):
-            log(f"  scene {i+1}: pexels (q={query!r})")
+        # 1. Try Pexels (带 offset 避免每次都拿第一张)
+        if try_pexels_image(base_query, img_path, width=width, height=height, offset=offset):
+            log(f"  scene {i+1}: pexels (q={base_query!r}, offset={offset})")
             media_items.append(("image", img_path))
             continue
+        # 1b. LLM 抽不到结果时，再试 chunk 原文本（中文 Pexels 兜底）
+        if kws:
+            fallback_q = extract_pexels_query(chunk, theme, i)
+            if try_pexels_image(fallback_q, img_path, width=width, height=height, offset=offset):
+                log(f"  scene {i+1}: pexels fallback (q={fallback_q!r})")
+                media_items.append(("image", img_path))
+                continue
         # 2. Fall back to MiniMax
         log(f"  scene {i+1}: pexels miss, trying MiniMax...")
         prompt = build_visual_prompt(chunk, theme, scene_index=i, total=len(chunks))
@@ -186,16 +253,42 @@ def render_placeholder(
         )
         media_items.append(("image", img_path))
 
+    # 1c. 决定场景类型 — 30% kinetic（数字/短句用 hyperframes 原生渲染）
+    # 这样 hyperframes 的 kinetic typography、动画数字、scene transitions
+    # 才有发挥空间，而不是 100% 都是 Pexels 网图当幻灯片。
+    media_items = _enrich_with_kinetic(media_items, chunks, width, height)
+
     # 2. Build HTML with images + Ken Burns + subtitles
+    # RC3 fix: when alignment.json exists (TTS server provides per-char
+    # timestamps via subtitle_enable=true), size each scene to the actual
+    # TTS span of its text rather than equal-time. Without this, scene i's
+    # caption appears 0.5-1s before/after TTS actually reads that text.
+    scene_times = _load_alignment_scene_times(job_id, chunks, total_duration)
+    # RC3+ fix: sub-captions within a scene also need to follow TTS pacing,
+    # not just the scene boundary. Otherwise we get "TTS finished the
+    # sentence but the next sub-caption hasn't appeared" or "next sub is
+    # already showing while TTS is still mid-sentence".
+    subtimes = (
+        _load_alignment_subtimes(job_id, scene_times, chunks)
+        if scene_times
+        else None
+    )
+
     html = build_image_composition_html(
         media_items,
         chunks,
         total_duration=total_duration,
         width=width,
         height=height,
+        scene_times=scene_times,
+        subtimes=subtimes,
     )
     html_path.write_text(html, encoding="utf-8")
-    log(f"  generated HTML with {len(chunks)} scenes ({len(script_text)} chars)")
+    log(f"  generated HTML with {len(chunks)} scenes ({len(script_text)} chars)"
+        + (f" [alignment-driven, {len(scene_times)} spans, "
+           f"{sum(1 for s in subtimes or [] if s)}/{len(chunks)} scenes with sub-caption alignment]"
+           if scene_times and subtimes else
+           f" [alignment-driven, {len(scene_times)} spans]" if scene_times else " [equal-time]"))
 
     out_mp4 = render_dir / "video-only.mp4"
 
@@ -227,7 +320,7 @@ def render_placeholder(
     return out_mp4
 
 
-def try_pexels_video(query, out_path, width, height, timeout=120):
+def try_pexels_video(query, out_path, width, height, timeout=120, offset=0):
     """Try to fetch a Pexels video clip. Returns True on success."""
     try:
         result = subprocess.run(
@@ -237,6 +330,7 @@ def try_pexels_video(query, out_path, width, height, timeout=120):
                 "--out", str(out_path),
                 "--w", str(width),
                 "--h", str(height),
+                "--offset", str(offset),
             ],
             capture_output=True,
             text=True,
@@ -251,7 +345,7 @@ def try_pexels_video(query, out_path, width, height, timeout=120):
         return False
 
 
-def try_pexels_image(query, out_path, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT, timeout=30):
+def try_pexels_image(query, out_path, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT, timeout=30, offset=0):
     """Try to fetch a Pexels image. Returns True on success."""
     try:
         result = subprocess.run(
@@ -259,7 +353,7 @@ def try_pexels_image(query, out_path, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT
              "--query", query,
              "--out", str(out_path),
              "--w", str(width), "--h", str(height),
-             "--per-page", "3"],
+             "--per-page", "3", "--offset", str(offset)],
             capture_output=True, text=True, timeout=timeout,
         )
         if result.returncode == 0 and out_path.exists() and out_path.stat().st_size > 5000:
@@ -398,6 +492,454 @@ def create_fallback_image(
         out_path.write_bytes(b"")
 
 
+def _load_alignment_scene_times(job_id, chunks, total_duration):
+    """Map each split chunk to a (start, end) tuple from alignment.json.
+
+    alignment.json is built by process_video_narrate_jobs.
+    _build_alignment_from_tts_subs from the TTS server's per-word
+    timestamps. We need to translate the *n_scenes* (which were produced
+    by split_script_to_cards — equal-chunk-size slices) to those
+    per-sentence timestamps so the rendered video's scenes match the
+    TTS pacing.
+
+    Strategy: each chunk contains some number of original sentences from
+    script.txt. Find the earliest start and latest end among the alignment
+    sentences whose text appears within that chunk. This gives a tight
+    start/end pair per chunk.
+
+    Returns a list of (start, end) tuples the same length as chunks, or []
+    if no alignment is available (caller should fall back to equal-time).
+    """
+    run_dir = SKILL_DIR / "runs" / job_id
+    aln_path = run_dir / "alignment.json"
+    if not aln_path.exists():
+        return []
+    try:
+        aln = json.loads(aln_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+
+    sentences = aln.get("sentences") or []
+    if not sentences:
+        return []
+
+    # For each sentence, build a strip()d version for substring match.
+    sent_clean = [s["text"].strip() for s in sentences]
+    # Per-sentence spans (in seconds), start/end in absolute voice time.
+    sent_spans = [(s["start"], s["end"]) for s in sentences]
+
+    scene_times: list[tuple[float, float]] = []
+    cursor = 0  # walk through sentences, don't re-match
+    # Normalize whitespace for both sides — TTS preserves punctuation
+    # but the chunk may differ from the sentence text by 1-2 chars
+    # (e.g. trailing punctuation, line breaks from split_script_to_cards).
+    def _norm(s: str) -> str:
+        return "".join(s.split())
+
+    sent_norm = [_norm(s) for s in sent_clean]
+    for chunk in chunks:
+        if not chunk:
+            scene_times.append((0.0, 0.0))
+            continue
+        chunk_norm = _norm(chunk)
+        # Find the first sentence (≥cursor) whose normalized text overlaps
+        # the normalized chunk.
+        first = None
+        last = None
+        for j in range(cursor, len(sent_norm)):
+            stxt = sent_norm[j]
+            if not stxt:
+                continue
+            # Substring match in either direction, or large overlap
+            # (e.g. chunk contains first 30 chars of a 60-char sentence).
+            if stxt in chunk_norm or chunk_norm in stxt:
+                if first is None:
+                    first = sent_spans[j][0]
+                last = sent_spans[j][1]
+                cursor = j + 1
+            elif first is not None and (stxt[:20] not in chunk_norm and chunk_norm[:20] not in stxt):
+                # Already matched some, this sentence clearly unrelated
+                break
+        if first is None:
+            scene_times.append(None)
+        else:
+            scene_times.append((first, last))
+    # If any chunk missed, drop back to equal-time for everything (cleaner
+    # than mixing).
+    if any(t is None for t in scene_times):
+        return []
+    # Clamp: last scene must end exactly at total_duration so the video
+    # doesn't run short.
+    if scene_times:
+        scene_times[-1] = (scene_times[-1][0], float(total_duration))
+    return scene_times
+
+
+# Split-priority chars for `_split_sentence_into_subs`. Order = preference:
+# (punctuation, particles, pronouns, common 2-3 char words).
+_SPLIT_PUNCT = "。！？，；：、"
+_SPLIT_PARTICLES = "的了着过啊吧呢嘛呀"
+_SPLIT_PRONOUNS = "我你他她它们"
+_SPLIT_COMMON_WORDS = (
+    "自己", "百分之", "九十", "萤火虫", "鮟鱇鱼", "共生", "深海", "灯光",
+    "太阳光", "灯笼鱼", "百分之九十", "海面", "天空", "大地", "生物",
+)
+
+
+def _split_sentence_into_subs(text: str, max_chars: int, hard_max: int) -> list[str]:
+    """Split a sentence into sub-caption chunks at semantic boundaries.
+
+    Order of preference for split points:
+      1. Right after full-width punctuation 。！？，；：、(priority 0)
+      2. Right after particles 的/了/着/过/啊/吧/呢/嘛/呀 (priority 1)
+      3. Right before pronouns 我/你/他/她/它/们 (priority 2)
+      4. Last resort: back up before common 2-3 char words like 自己/百分之/九十
+
+    Head must be ≥ first_safe (= max(4, len(text)//3)); tail must be ≥ 3.
+    Short sentences (≤ max_chars) stay whole. Sentences with no good split
+    point and length ≤ hard_max also stay whole — let TTS natural pace
+    handle the timing, don't fragment.
+    """
+    if len(text) <= max_chars:
+        return [text]
+    first_safe = max(4, len(text) // 3)
+    # Search range is [first_safe, hard_max) for normal sentences.
+    # For sentences > 2*hard_max, also accept punctuation split points
+    # in [hard_max, len(text)-3) — only used if the soft range finds
+    # nothing acceptable (so long sentences still split somewhere
+    # reasonable instead of hard-cutting at hard_max).
+    candidates: list[tuple[int, int, int]] = []  # (priority, end_index, range_kind)
+    range_kind_soft = 0  # within [first_safe, hard_max)
+    range_kind_hard = 1  # beyond hard_max (only PUNCT, fallback only)
+    allow_hard = len(text) > 2 * hard_max
+    for i in range(first_safe, len(text) - 3 if allow_hard else min(len(text), hard_max)):
+        prev_ch = text[i - 1] if i > 0 else ""
+        next_ch = text[i] if i < len(text) else ""
+        in_soft = i < hard_max
+        if prev_ch in _SPLIT_PUNCT:
+            candidates.append((0, i, range_kind_soft if in_soft else range_kind_hard))
+        elif prev_ch in _SPLIT_PARTICLES and in_soft:
+            candidates.append((1, i, range_kind_soft))
+        elif next_ch in _SPLIT_PRONOUNS and i + 1 < len(text) and in_soft:
+            candidates.append((2, i, range_kind_soft))
+    if candidates:
+        # Tie-breaker key (lower wins):
+        #   (rk, prio, head_penalty, balance_diff, range_excess)
+        #
+        # rk: soft range (0) wins over hard range (1).
+        # prio: PUNCT (0) > PARTICLES (1) > PRONOUNS (2).
+        # head_penalty: 0 if head ≤ max_chars; otherwise 10x over.
+        # balance_diff: |max(head,tail) - max_chars/2|.
+        # range_excess: how far past hard_max the cut is (prefer earlier).
+        #
+        # Tail policy: prefer tail ≤ max_chars (each sub fits on screen).
+        # If no candidate has tail ≤ max_chars, accept tail ≤ hard_max
+        # with a strong penalty so we still find a cut somewhere.
+        best = None  # (key_tuple, end)
+        for prio, end, rk in candidates:
+            tail_len = len(text) - end
+            if tail_len < 3:
+                continue
+            head_len = end
+            # Skip candidates whose head is unreasonably long for this
+            # sentence (> 2*hard_max) — those would create a single huge
+            # sub-caption. Recursion handles the rest.
+            if head_len > 2 * hard_max:
+                continue
+            if tail_len > hard_max:
+                # Tail too long even for hard_max; skip — recursion
+                # will need to handle the tail later via hard-cut.
+                continue
+            head_penalty = 0 if head_len <= max_chars else (head_len - max_chars) * 10
+            balance_diff = abs(max(head_len, tail_len) - max_chars / 2)
+            tail_penalty = 0 if tail_len <= max_chars else (tail_len - max_chars) * 5
+            range_excess = max(0, end - hard_max) if rk == range_kind_hard else 0
+            key = (rk, prio, head_penalty, balance_diff, tail_penalty, range_excess)
+            if best is None or key < best[0]:
+                best = (key, end)
+        if best is not None:
+            tail = text[best[1]:]
+            if len(tail) > max_chars:
+                # Tail is longer than max_chars — recurse to split it
+                # further (caller can't see this without recursion).
+                return [text[:best[1]], *_split_sentence_into_subs(tail, max_chars, hard_max)]
+            return [text[:best[1]], text[best[1]:]]
+    # No semantic split point fits — keep whole if under hard_max.
+    if len(text) <= hard_max:
+        return [text]
+    # Text exceeds hard_max — hard-cut, but back up to avoid splitting a
+    # common word if possible.
+    end = hard_max
+    for word in _SPLIT_COMMON_WORDS:
+        if end >= len(word) and text[end - len(word):end] == word:
+            end -= len(word)
+            break
+    return [text[:end], *(_split_sentence_into_subs(text[end:], max_chars, hard_max))]
+
+
+# Sub-caption text cleanup: replace Chinese punctuation with a single
+# space (so word boundaries remain readable) and collapse repeated
+# whitespace. The time projection in `_load_alignment_subtimes` still
+# walks the original sub_text (with punctuation) so slot_start/slot_end
+# keep tracking TTS character positions.
+_PUNCT_TO_SPACE = str.maketrans({c: " " for c in "，。！？；：、　"})
+_ELLIPSIS_TO_SPACE = str.maketrans({c: " " for c in "…⋯"})
+
+
+def _strip_punctuation(text: str) -> str:
+    """Replace Chinese punctuation and overflow ellipsis markers with spaces,
+    then collapse runs of whitespace."""
+    text = text.translate(_PUNCT_TO_SPACE).translate(_ELLIPSIS_TO_SPACE)
+    return " ".join(text.split())
+
+
+def _load_alignment_subtimes(job_id, scene_times, chunks, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT):
+    """Per-scene sub-caption (text + timing) driven by alignment.sentences.
+
+    Returns a list parallel to chunks; for each scene, a list of
+    (lines, slot_start, slot_end) tuples in *absolute* video time. Each
+    `lines` is a list[str] (the sub-caption's line list, e.g. ["海底发光的鱼"]),
+    and slot_start/slot_end are the absolute start/end in seconds.
+
+    The caller MUST use these lines for the subtitle text (not
+    wrap_to_subcaptions(chunk)) so that the rendered n_subs matches the
+    alignment-driven count exactly. If the caller used
+    wrap_to_subcaptions(chunk), the sub count would differ (because
+    `chunk` and the contained sentence list produce different splits
+    when a sentence crosses the 20-char boundary), and the alignment-
+    driven slot list would silently fail to apply.
+
+    Empty list (len 0 for a scene) means "no alignment available for
+    this scene; fall back to equal-time within the scene".
+
+    Without this, sub-captions get equal-time within a scene (e.g. 60
+    chars / 3 = 20 chars per slot, then time split 3 ways) — but TTS
+    doesn't speak equal time per 20 chars (it pauses on punctuation,
+    runs through numbers faster, etc.). The result: TTS finishes a
+    sub-caption's text but the next one hasn't appeared yet, OR the
+    next sub-caption is already up while TTS is still mid-sentence.
+    By using per-sentence alignment spans, sub-captions track the real
+    cadence of the voice.
+    """
+    if not scene_times:
+        return None
+    run_dir = SKILL_DIR / "runs" / job_id
+    aln_path = run_dir / "alignment.json"
+    if not aln_path.exists():
+        return None
+    try:
+        aln = json.loads(aln_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    sentences = aln.get("sentences") or []
+    if not sentences:
+        return None
+
+    sent_spans = [(s["start"], s["end"]) for s in sentences]
+    # Sub-caption char budget.
+    #   max_chars: soft ceiling — prefer to keep sentences whole under this
+    #              length. Set generously (18/12) to avoid mid-word cuts like
+    #              "自己" → "自/己".
+    #   hard_max:  hard ceiling — never exceed; only matters for >22 char
+    #              sentences (TTS fast-read cases).
+    # The split is done by `_split_sentence_into_subs`, which prefers
+    # semantic boundaries (punctuation > particles > pronouns > common
+    # words) over hard char-cut positions.
+    max_chars = 18 if width >= height else 12
+    hard_max = 22 if width >= height else 16
+    MIN_SUB_DUR = 0.3  # floor: a sub-caption must stay on screen >=300ms
+    SUB_GAP = 0.04     # visual gap between consecutive sub-captions
+
+    # Char-level alignment (1:1 with script non-whitespace chars). Used
+    # to look up actual TTS time for each sub-caption's first/last char.
+    char_entries = aln.get("chars") or []
+    script_path = run_dir / "script.txt"
+    script_chars: list[str] = []
+    if script_path.exists():
+        script_chars = [c for c in script_path.read_text(encoding="utf-8").strip() if c.strip() and c != "\n"]
+    if len(char_entries) != len(script_chars):
+        # Lengths disagree (shouldn't happen, but guard against it) —
+        # fall back to equal-time within sentence for the whole scene.
+        char_entries = []
+
+    out: list[list[tuple[list[str], float, float]]] = []
+    for (scene_start, scene_end), chunk in zip(scene_times, chunks):
+        scene_dur = scene_end - scene_start
+        if scene_dur <= 0 or not chunk:
+            out.append([])
+            continue
+        contained_idx = [
+            j for j, (a, b) in enumerate(sent_spans)
+            if a >= scene_start - 0.05 and b <= scene_end + 0.05
+            and a < scene_end and b > scene_start  # exclude cross-boundary (zero-duration) sentences
+        ]
+        if not contained_idx:
+            out.append([])
+            continue
+        scene_subs: list[tuple[list[str], float, float]] = []
+        if not char_entries:
+            # No char-level data — fall back to per-sentence proportional
+            # allocation using _split_sentence_into_subs (semantic split
+            # at punctuation > particles > pronouns > common words).
+            for j in contained_idx:
+                sent_a, sent_b = sent_spans[j]
+                sent_text_j = sentences[j]["text"].strip()
+                sent_dur = max(sent_b - sent_a, 0.0)
+                sent_len = len(sent_text_j) or 1
+                sub_chunks = _split_sentence_into_subs(sent_text_j, max_chars, hard_max)
+                cursor_in_sent = 0
+                for sub_text in sub_chunks:
+                    if not sub_text:
+                        continue
+                    char_start = cursor_in_sent
+                    char_end = cursor_in_sent + len(sub_text) - 1
+                    if sent_dur > 0:
+                        slot_start = sent_a + (char_start / sent_len) * sent_dur
+                        slot_end = sent_a + ((char_end + 1) / sent_len) * sent_dur
+                    else:
+                        slot_start, slot_end = sent_a, sent_b
+                    display_text = _strip_punctuation(sub_text)
+                    if not display_text:
+                        cursor_in_sent += len(sub_text)
+                        continue
+                    scene_subs.append(([display_text], slot_start, slot_end))
+                    cursor_in_sent += len(sub_text)
+        else:
+            # Find the script-chars index where this scene's text begins.
+            # Strategy: walk the chunk's first few chars forward from
+            # scene_start to find the matching position in script_chars.
+            chunk_first = chunk.strip()[0] if chunk and chunk.strip() else None
+            cursor_char_idx = 0
+            if chunk_first:
+                for i, sc in enumerate(script_chars):
+                    if sc == chunk_first:
+                        # Check timestamp: this char should be at or after
+                        # scene_start (within tolerance).
+                        if char_entries[i]["start"] >= scene_start - 0.3:
+                            cursor_char_idx = i
+                            break
+            for j in contained_idx:
+                sent_text_j = sentences[j]["text"].strip()
+                if not sent_text_j:
+                    continue
+                # Advance cursor_char_idx until script_chars[cursor_char_idx]
+                # matches sent_text_j[0] (or past end)
+                while cursor_char_idx < len(script_chars) and script_chars[cursor_char_idx] != sent_text_j[0]:
+                    cursor_char_idx += 1
+                if cursor_char_idx >= len(script_chars):
+                    # Out of alignment data — use sentence span as flat
+                    sent_a, sent_b = sent_spans[j]
+                    stripped = _strip_punctuation(sent_text_j)
+                    if stripped:
+                        scene_subs.append(([stripped], sent_a, sent_b))
+                    continue
+                # Now walk forward through script_chars, matching sent_text_j
+                # char by char, to find the [start, end] char indices for
+                # this sentence.
+                sent_start_idx = cursor_char_idx
+                k = 0  # position in sent_text_j
+                i = sent_start_idx
+                while k < len(sent_text_j) and i < len(script_chars):
+                    if script_chars[i] == sent_text_j[k]:
+                        k += 1
+                    i += 1
+                sent_end_idx = i  # one past last matched char
+                if k < len(sent_text_j):
+                    # Couldn't match the whole sentence — fall back
+                    sent_a, sent_b = sent_spans[j]
+                    stripped = _strip_punctuation(sent_text_j)
+                    if stripped:
+                        scene_subs.append(([stripped], sent_a, sent_b))
+                    cursor_char_idx = sent_end_idx
+                    continue
+
+                # Split sent_text_j into sub-captions at semantic
+                # boundaries. `_split_sentence_into_subs` prefers
+                # punctuation > particles > pronouns > common-word
+                # boundaries; short sentences (≤ max_chars) stay whole,
+                # and sentences ≤ hard_max with no good split also stay
+                # whole — letting TTS pace handle it instead of mid-word
+                # cuts like "自己" → "自/己".
+                sub_chunks = _split_sentence_into_subs(sent_text_j, max_chars, hard_max)
+                # Build sub-caption entries. Each sub's slot uses the actual
+                # TTS per-char timestamps from alignment.json chars[].
+                # Earlier proportional-by-char-count was wrong: it ignored
+                # in-sentence pauses (after ，。！？) which take ~100-300ms
+                # but contribute 0 chars, causing each sub to over-run
+                # into the next voice segment (visible as "subs lag behind
+                # voice" especially after the 20s mark on long sentences).
+                sent_a, sent_b = sent_spans[j]
+                sent_dur = max(sent_b - sent_a, 0.0)
+                sent_len = len(sent_text_j) or 1
+                cursor_in_sent = 0
+                for sub_text in sub_chunks:
+                    if not sub_text:
+                        continue
+                    char_start = cursor_in_sent
+                    char_end = cursor_in_sent + len(sub_text) - 1
+                    global_start_idx = sent_start_idx + char_start
+                    global_end_idx = sent_start_idx + char_end
+                    if 0 <= global_start_idx < len(char_entries) and 0 <= global_end_idx < len(char_entries):
+                        slot_start = char_entries[global_start_idx]["start"]
+                        slot_end = char_entries[global_end_idx]["end"]
+                    else:
+                        # Bounds guard — fall back to proportional for this sub.
+                        if sent_dur > 0:
+                            slot_start = sent_a + (char_start / sent_len) * sent_dur
+                            slot_end = sent_a + ((char_end + 1) / sent_len) * sent_dur
+                        else:
+                            slot_start, slot_end = sent_a, sent_b
+                    if slot_end <= slot_start:
+                        slot_end = slot_start + 0.1
+                    # Strip punctuation from the rendered sub-caption (user
+                    # preference — punctuation adds visual clutter over
+                    # a moving video). Time projection stays on the
+                    # original sub_text (with punctuation) so slot times
+                    # still track TTS character positions.
+                    display_text = _strip_punctuation(sub_text)
+                    if not display_text:
+                        # Sub was entirely punctuation — skip it; advance
+                        # the cursor so subsequent subs still track
+                        # correctly.
+                        cursor_in_sent += len(sub_text)
+                        continue
+                    scene_subs.append(([display_text], slot_start, slot_end))
+                    cursor_in_sent += len(sub_text)
+                cursor_char_idx = sent_end_idx
+        if not scene_subs:
+            out.append([])
+            continue
+
+        # Enforce MIN_SUB_DUR floor. If a sub is shorter than MIN_SUB_DUR,
+        # extend it; shift the next sub's start forward accordingly. This
+        # keeps the sub legible when TTS reads very fast (e.g. 16 chars
+        # in 1.15s after the 30s mark).
+        adjusted: list[tuple[list[str], float, float]] = []
+        for k, (s_lines, a, b) in enumerate(scene_subs):
+            if b - a < MIN_SUB_DUR:
+                b = a + MIN_SUB_DUR
+            adjusted.append((s_lines, a, b))
+        # Re-clamp last sub to scene_end
+        last_lines, last_a, _ = adjusted[-1]
+        if last_a < scene_end:
+            adjusted[-1] = (last_lines, last_a, scene_end)
+        # Apply SUB_GAP: each sub's start is the previous sub's end + gap
+        # (skipping the first sub, which is clamped to scene_start).
+        out_subs: list[tuple[list[str], float, float]] = []
+        prev_end = scene_start
+        for k, (s_lines, a, b) in enumerate(adjusted):
+            if k == 0:
+                a = scene_start
+            else:
+                a = max(a, prev_end + SUB_GAP)
+            if a >= b:
+                a = b - 0.01  # avoid 0-width
+            out_subs.append((s_lines, a, b))
+            prev_end = b
+        out.append(out_subs)
+    return out
+
+
 def split_script_to_cards(script_text, n_cards=5):
     """Split script into ~n_cards chunks by sentence boundaries.
 
@@ -427,101 +969,491 @@ def split_script_to_cards(script_text, n_cards=5):
     return chunks
 
 
+# ── kinetic scene helpers ────────────────────────────────────────────
+# 用于"数字/概念/短句"场景，绕开 Pexels 真实图库，直接用 hyperframes 原生
+# 渲染（渐变背景 + 动画数字 / 大字卡片）。让 hyperframes 发挥 CSS/GSAP
+# 能力，而不是"100% 用网图当幻灯片"。
+
+PALETTES = [
+    # (top, bottom) — 10 套渐变色
+    ("#1a1d2e", "#3d1f3f"),  # 暗紫
+    ("#0f2027", "#2c5364"),  # 深海
+    ("#200122", "#6f0000"),  # 暗红
+    ("#1f4037", "#99f2c8"),  # 翠绿（浅）
+    ("#16222a", "#3a6073"),  # 灰蓝
+    ("#3a1c71", "#d76d77"),  # 紫粉
+    ("#0b486b", "#f56217"),  # 蓝橙
+    ("#1e3c72", "#2a5298"),  # 蓝调
+    ("#5d4157", "#a8caba"),  # 紫绿
+    ("#000428", "#004e92"),  # 深蓝
+]
+
+
+def _palette_for(index: int) -> tuple[str, str]:
+    return PALETTES[index % len(PALETTES)]
+
+
+# 主标题字号（hook 钩子用）— 1920×1080 vs 1080×1920 不同档
+_TITLE_FS = lambda w, h: 220 if w >= h else 280
+_LABEL_FS = lambda w, h: 100 if w >= h else 130
+_COUNTER_FS = lambda w, h: 480 if w >= h else 600
+_UNIT_FS = lambda w, h: 140 if w >= h else 180
+
+
+def _kinetic_base_css(scene_id: str) -> str:
+    """共用 CSS：渐变背景 + 全屏 flex 居中 + 大字白字黑描边。"""
+    return f"""
+    #{scene_id} {{
+      position: absolute; inset: 0;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      text-align: center;
+      color: #fff;
+      text-shadow:
+        -4px -4px 0 #000, 4px -4px 0 #000,
+        -4px 4px 0 #000, 4px 4px 0 #000,
+        -4px 0 0 #000, 4px 0 0 #000,
+        0 -4px 0 #000, 0 4px 0 #000,
+        0 10px 30px rgba(0, 0, 0, 0.6);
+    }}
+    #{scene_id} .k-label {{
+      font-size: var(--k-label-fs); font-weight: 800; letter-spacing: 4px;
+      margin-bottom: 24px; opacity: 0.92;
+    }}
+    #{scene_id} .k-counter {{
+      font-size: var(--k-counter-fs); font-weight: 900; line-height: 1;
+      font-variant-numeric: tabular-nums;
+    }}
+    #{scene_id} .k-unit {{
+      font-size: var(--k-unit-fs); font-weight: 800; margin-top: 16px; opacity: 0.95;
+    }}
+    #{scene_id} .k-title {{
+      font-size: var(--k-title-fs); font-weight: 900; line-height: 1.1;
+      max-width: 86%; padding: 0 5%;
+    }}
+    #{scene_id} .k-title .word {{
+      display: inline-block; opacity: 0; transform: translateY(20px);
+    }}
+    """
+
+
+def build_kinetic_text_scene_html(text: str, scene_index: int, width: int, height: int) -> str:
+    """纯文字 kinetic 场景 — 大白字逐词淡入，无背景图。
+
+    用于短句（< 20 字）、钩子副标题、抽象概念陈述。
+    """
+    scene_id = f"kinetic-txt-{scene_index}"
+    top, bottom = _palette_for(scene_index)
+    # 按 CJK 字符 + 英文单词切词
+    tokens = re.findall(r"[A-Za-z0-9]+|[一-鿿]|[^\s\w]", text)
+    words_html = " ".join(f'<span class="word">{escape_html(t)}</span>' for t in tokens)
+    css_vars = (
+        f"--k-label-fs:{_LABEL_FS(width, height)}px;"
+        f"--k-title-fs:{_TITLE_FS(width, height)}px;"
+        f"--k-counter-fs:{_COUNTER_FS(width, height)}px;"
+        f"--k-unit-fs:{_UNIT_FS(width, height)}px;"
+    )
+    return f"""
+    <div class="kinetic kinetic-text" id="{scene_id}" style="
+      background: linear-gradient(135deg, {top} 0%, {bottom} 100%);
+      {css_vars}
+    ">
+      <style>{_kinetic_base_css(scene_id)}</style>
+      <div class="k-title">{words_html}</div>
+      <script>
+      (function() {{
+        var sel = '#{scene_id} .word';
+        gsap.to(sel, {{
+          opacity: 1, y: 0, duration: 0.5, ease: 'power2.out',
+          stagger: 0.12,
+        }});
+      }})();
+      </script>
+    </div>
+    """
+
+
+def build_animated_counter_scene_html(
+    label: str, value: int, unit: str, scene_index: int, width: int, height: int
+) -> str:
+    """动画数字场景 — GSAP 从 0 滚到 value，用于"人脑六成是脂肪"之类。"""
+    scene_id = f"kinetic-num-{scene_index}"
+    top, bottom = _palette_for(scene_index + 3)  # 偏移避免和 text 撞色
+    css_vars = (
+        f"--k-label-fs:{_LABEL_FS(width, height)}px;"
+        f"--k-title-fs:{_TITLE_FS(width, height)}px;"
+        f"--k-counter-fs:{_COUNTER_FS(width, height)}px;"
+        f"--k-unit-fs:{_UNIT_FS(width, height)}px;"
+    )
+    return f"""
+    <div class="kinetic kinetic-counter" id="{scene_id}" style="
+      background: linear-gradient(135deg, {top} 0%, {bottom} 100%);
+      {css_vars}
+    ">
+      <style>{_kinetic_base_css(scene_id)}</style>
+      <div class="k-label">{escape_html(label)}</div>
+      <div class="k-counter" data-target="{value}">0</div>
+      <div class="k-unit">{escape_html(unit)}</div>
+      <script>
+      (function() {{
+        var el = document.querySelector('#{scene_id} .k-counter');
+        var target = parseInt(el.getAttribute('data-target'), 10);
+        var obj = {{ val: 0 }};
+        gsap.to(obj, {{
+          val: target, duration: 2.2, ease: 'power2.out',
+          onUpdate: function() {{ el.textContent = Math.round(obj.val); }}
+        }});
+      }})();
+      </script>
+    </div>
+    """
+
+
+_NUMBER_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(%|％|倍|万|亿|岁|分钟|秒|天|月|年|公斤|克|千|百)?")
+# 中文数字: "六成" "六十" "八千万" "三十" "两亿" "五百年" "第七天"
+_CN_NUM_CHARS = "零一二三四五六七八九十两"
+_CN_NUM_RE = re.compile(
+    r"([零一二三四五六七八九十两百千]+)"
+    r"\s*(%|％|倍|万|亿|岁|分钟|秒|天|月|年|公斤|克|千|百|第|成)?"
+)
+# 数字单位提示，用于 counter 场景
+_UNIT_FROM_RE = {
+    "%": "%", "％": "%", "倍": "倍", "万": "万",
+    "亿": "亿", "岁": "岁", "分钟": "分钟", "秒": "秒",
+    "天": "天", "月": "月", "年": "年", "公斤": "kg", "克": "g",
+    "千": "k", "百": "百", "": "",
+    "第": "",  # "第七天" → counter
+}
+
+
+def _parse_cn_num(s):
+    """把中文数字串转成 int。覆盖 1-99 以及带 万/千/百 修饰的情况。
+
+    接受: "六" "三十" "六十五" "一百" "两百" "八千" "三万" "八千万"
+    未知结构或 0 都返回 1（避免动画停在 0）。
+    """
+    s = s.strip()
+    if not s:
+        return 0
+    digit = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3,
+             "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+    if s in digit:
+        return digit[s]
+
+    # 切分 "X千Y万Z" - 找最高级单位，按它分段累加
+    val = 0
+    for unit, mult in (("亿", 10**8), ("万", 10**4),
+                       ("千", 10**3), ("百", 10**2), ("十", 10)):
+        if unit in s:
+            head, _, tail = s.partition(unit)
+            # head 可能是 "X" / "X十" / "X千" - 递归算
+            if head:
+                h = _parse_cn_num(head)
+            elif unit == "十":
+                h = 1  # "十五" → 1*10 + 5
+            else:
+                h = 1
+            val += h * mult
+            s = tail
+    # 余下个位
+    if s and s in digit:
+        val += digit[s]
+    return val or 1
+
+
+def _extract_counter_value(chunk):
+    """从 chunk 抽出第一个具体数字和单位。返回 (value, unit) 或 None。
+
+    value 归一化到 [1, 999] 范围（counter 场景 GSAP 动画 0→value），
+    对 "万"/"亿" 级别做单位换算（"八千万" → (8, "千万吨")、"两亿" → (2, "亿")）。
+    unit 是字面上的单位后缀，会原样显示在数字右边。
+    """
+    # 1) ASCII 数字优先（最准）
+    m = _NUMBER_RE.search(chunk)
+    if m:
+        try:
+            v = int(float(m.group(1)))
+            unit = (m.group(2) or "").strip()
+            return _normalize_counter(v, _UNIT_FROM_RE.get(unit, unit or ""))
+        except (ValueError, IndexError):
+            pass
+    # 2) 中文数字
+    m = _CN_NUM_RE.search(chunk)
+    if m and any(c in _CN_NUM_CHARS for c in m.group(0)):
+        v = _parse_cn_num(m.group(1).rstrip("第").strip())
+        if v > 0:
+            unit_raw = (m.group(2) or "").strip()
+            return _normalize_counter(v, _UNIT_FROM_RE.get(unit_raw, unit_raw or ""))
+    return None
+
+
+def _normalize_counter(value, unit):
+    """把 value 压回 [1, 9999]（counter 场景动画 0→value），对"万"/"亿"换算。
+
+    "八千万吨" (80000000) → (8000, "万吨")
+    "两亿" (200000000) → (2, "亿")
+    "三千年" (3000) → (3000, "年")
+    "30 岁" → 原样
+    "60 %" → 原样
+    """
+    if value <= 0:
+        return 1, unit
+    cap = 9999
+    # "六成" = 60% (一成 = 1/10)，把 value*10 当成 % 值
+    if "成" in unit and "亿" not in unit and "万" not in unit and "千" not in unit:
+        return min(value * 10, cap), "%"
+    if "亿" in unit and value >= 10**8:
+        head = value // 10**8
+        suffix = unit.replace("亿", "").strip()
+        new_unit = (suffix + "亿") if suffix else "亿"
+        return min(head, cap), new_unit
+    if "万" in unit and value >= 10**4:
+        head = value // 10**4
+        suffix = unit.replace("万", "").strip()
+        new_unit = (suffix + "万") if suffix else "万"
+        return min(head, cap), new_unit
+    if "千" in unit and value >= 1000:
+        head = value // 1000
+        suffix = unit.replace("千", "").strip()
+        new_unit = (suffix + "千") if suffix else "千"
+        return min(head, cap), new_unit
+    return min(value, cap), unit
+
+
+def decide_scene_type(chunk: str, scene_index: int) -> str:
+    """返回 'counter' | 'kinetic' | 'stock'。"""
+    if not chunk or not chunk.strip():
+        return "stock"
+    text = chunk.strip()
+    # 含"有视觉冲击"的数字（>= 5 或有单位）→ counter 场景
+    extracted = _extract_counter_value(text)
+    if extracted:
+        value, unit = extracted
+        # 弱数字（"第一刀"/"一辈子" 之类）不当 counter — 阈值 >= 5 或有单位
+        if value >= 5 or unit:
+            return "counter"
+    # 短句（< 18 字，无数字） → kinetic text
+    if len(text) < 18:
+        return "kinetic"
+    return "stock"
+
+
+def _enrich_with_kinetic(media_items, chunks, width, height):
+    """把 ~30% 的"含数字/短句"场景替换为 kinetic HTML 注入。
+
+    返回新的 media_items 列表（kinetic 类型用 ("kinetic", html_str) 元组）。
+    """
+    n = len(media_items)
+    out = []
+    kinetic_count = 0
+    for i, ((kind, path), chunk) in enumerate(zip(media_items, chunks)):
+        scene_type = decide_scene_type(chunk, i)
+        if scene_type == "counter":
+            extracted = _extract_counter_value(chunk) or (0, "")
+            value, unit = extracted
+            # 把数字部分去掉，剩下的就是 label
+            label = re.sub(
+                r"\d+(?:\.\d+)?\s*[%％倍万亿岁分钟秒天月年公斤克千百]?",
+                "", chunk,
+            )
+            label = re.sub(
+                r"[零一二三四五六七八九十两](?:百|十)?[零一二三四五六七八九十两]?"
+                r"(?:\.\d+)?\s*[%％倍万亿岁分钟秒天月年公斤克千百第]?",
+                "", label,
+            )
+            label = re.sub(r"[，。！？.!?]+$", "", label).strip()[:24] or "数据"
+            html_str = build_animated_counter_scene_html(
+                label, value, unit, i, width, height
+            )
+            out.append(("kinetic", html_str))
+            kinetic_count += 1
+        elif scene_type == "kinetic":
+            short = re.sub(r"\s+", " ", chunk).strip()
+            if len(short) > 24:
+                short = short[:24] + "…"
+            html_str = build_kinetic_text_scene_html(short, i, width, height)
+            out.append(("kinetic", html_str))
+            kinetic_count += 1
+        else:
+            out.append((kind, path))
+    log(
+        f"  scene type mix: {kinetic_count}/{n} kinetic "
+        f"({100*kinetic_count//max(n,1)}% — target ~30%)"
+    )
+    return out
+
+
 def build_image_composition_html(
     media_items,
     chunks,
     total_duration=DEFAULT_DURATION_SEC,
     width=DEFAULT_WIDTH,
     height=DEFAULT_HEIGHT,
+    scene_times=None,
+    subtimes=None,
 ):
     """Build hyperframes composition HTML with image backgrounds + Ken Burns + subtitles.
 
     Each scene:
     - image_path: background image (1080x1920)
     - chunk: caption text
-    - per-scene duration: total_duration / n_scenes
+    - per-scene duration: total_duration / n_scenes (equal-time) OR
+      scene_times[i] = (start, end) per scene when TTS per-word
+      alignment is available — this is the RC3 fix that anchors each
+      scene to the TTS-pacing of its text.
+    - per-sub-caption timing: when subtimes[i] is a list of (rel_start,
+      rel_end) tuples, sub-captions follow TTS sentence-level alignment.
+      When subtimes[i] is empty/missing, sub-captions split the scene
+      duration equally (the old behaviour, retained as a fallback).
     - Ken Burns: slow zoom in (scale 1.0 → 1.12) + slight pan
     - Subtitle: large text at bottom with dark gradient overlay
     """
     n = len(media_items)
-    per = total_duration / n
-    # Ken Burns direction varies per scene (avoids all-same motion)
+    if scene_times and len(scene_times) == n:
+        # Alignment-driven: each scene uses the TTS span of its text.
+        starts = [round(scene_times[i][0], 3) for i in range(n)]
+        starts.append(round(scene_times[-1][1], 3))  # final stop
+    else:
+        per = total_duration / n
+        # hyperframes lint 抓相邻 clip 在 1e-14s 处的浮点尾数重叠。
+        # 预生成 starts 列表（每段起、止各 round 一次）避免累计误差。
+        starts = [round(i * per, 3) for i in range(n + 1)]
+        starts[-1] = round(total_duration, 3)  # 最后一段吃尾差
+    # Ken Burns: 抖音科普风动效更克制，只做轻微推进 (1.0 → 1.08)，无方向 pan，
+    # ease 也改成 linear，参考视频基本就是静帧 + 字幕。
     kb_variants = [
-        {"scale": 1.12, "x": -20, "y": -10},   # 0: zoom + left-up
-        {"scale": 1.15, "x": 20, "y": 0},       # 1: zoom + right
-        {"scale": 1.10, "x": 0, "y": -20},      # 2: zoom + up
-        {"scale": 1.13, "x": -15, "y": 10},     # 3: zoom + left-down
-        {"scale": 1.18, "x": 10, "y": -10},     # 4: zoom + right-up
-        {"scale": 1.12, "x": -25, "y": 0},      # 5: zoom + left
-        {"scale": 1.15, "x": 15, "y": 15},      # 6: zoom + right-down
-        {"scale": 1.10, "x": 0, "y": 20},       # 7: zoom + down
-        {"scale": 1.13, "x": -10, "y": -15},    # 8: zoom + left-up2
-        {"scale": 1.16, "x": 20, "y": -5},      # 9: zoom + right-up
+        {"scale": 1.08, "x": 0, "y": 0},
+        {"scale": 1.07, "x": 0, "y": 0},
+        {"scale": 1.09, "x": 0, "y": 0},
+        {"scale": 1.06, "x": 0, "y": 0},
+        {"scale": 1.08, "x": 0, "y": 0},
+        {"scale": 1.07, "x": 0, "y": 0},
     ]
 
     scenes_html = []
     stage_media_html = []
     timeline_tweens = []
     for i, ((media_kind, media_path), chunk) in enumerate(zip(media_items, chunks)):
-        start = i * per
-        media_filename = Path(media_path).name
+        start = starts[i]
+        per_this = starts[i + 1] - starts[i]
         kb = kb_variants[i % len(kb_variants)]
-        caption_chars = 18 if width >= height else 10
-        lines = wrap_caption_lines(chunk, max_chars=caption_chars, max_lines=3)
-        caption_html = "".join(f'<div class="cap-line">{escape_html(line)}</div>' for line in lines)
+        # 抖音科普风字幕：单行短句，max_lines=1，每张图一个 sub-caption。
+        caption_chars = 20 if width >= height else 14
+        # RC3+ fix: sub-captions + per-slot timing follow alignment when
+        # available. Each entry is (lines, slot_start, slot_end) in
+        # absolute video time. We pull the *text* from the alignment
+        # pre-pass too — otherwise wrap_to_subcaptions(chunk) here would
+        # split the chunk at punctuation independently of how the
+        # alignment pre-pass split it, producing a different n_subs and
+        # silently dropping us back to equal-time fallback.
+        _scene_subtimes = (
+            subtimes[i] if (subtimes and i < len(subtimes) and subtimes[i]) else None
+        )
+        if _scene_subtimes:
+            subcaptions = [st[0] for st in _scene_subtimes]
+            sub_slots = [(st[1], st[2]) for st in _scene_subtimes]
+        else:
+            subcaptions = wrap_to_subcaptions(chunk, max_chars=caption_chars, max_lines=1)
+            n_subs_fb = len(subcaptions)
+            slot = per_this / max(n_subs_fb, 1)
+            sub_slots = [(start + j * slot, start + (j + 1) * slot) for j in range(n_subs_fb)]
+        n_subs = len(subcaptions)
+        # No more first_sub_offset hack: alignment gives us the real
+        # TTS start time, so the first sub-caption appears exactly when
+        # TTS starts speaking. The opening hook is purely decorative
+        # and overlays the first sub-caption's text.
+        first_sub_offset = 0.0
         if media_kind == "video":
+            media_filename = Path(media_path).name
             stage_media_html.append(
                 f'<video class="bg bg-video" id="bg-{i+1}" '
                 f'src="videos/{media_filename}" muted playsinline loop '
                 f'data-track-index="0" data-start="{start}" '
-                f'data-duration="{per}"></video>'
+                f'data-duration="{per_this}"></video>'
             )
             media_html = ""
+        elif media_kind == "kinetic":
+            # 注入预先构建的 kinetic HTML（已含渐变背景 + GSAP timeline）
+            media_html = media_path
         else:
+            media_filename = Path(media_path).name
             media_html = (
                 f'<div class="bg" id="bg-{i+1}" '
                 f'style="background-image:url(images/{media_filename});"></div>'
             )
         hook_html = ""
-        if i == 0:
+        if i == 0 and media_kind != "kinetic":
             hook_text = wrap_caption_lines(chunk, max_chars=16, max_lines=2)
             hook_html = (
                 '<div class="hook" id="opening-hook">'
                 + "".join(f"<div>{escape_html(line)}</div>" for line in hook_text)
                 + "</div>"
             )
+        # Emit one <div class="subtitle"> per sub-caption slot
+        sub_html_parts = []
+        for j, lines in enumerate(subcaptions):
+            sub_id = f"sub-{i+1}-{j+1}"
+            caption_html = "".join(f'<div class="cap-line">{escape_html(line)}</div>' for line in lines)
+            sub_html_parts.append(
+                f'<div class="subtitle" id="{sub_id}">{caption_html}</div>'
+            )
+        # 场景间切换：hyperframes v0.6.89 lint 把 GSAP 动画的 .wipe 当作
+        # track 1 上的独立 clip，与下一场景 clip 在同一秒边界重叠 → 报错。
+        # 改用 clip 末尾的 Ken Burns + 字幕淡出做柔和切换。
         scenes_html.append(
             f'    <div id="scene-{i+1}" class="clip" data-track-index="1" '
-            f'data-start="{start}" data-duration="{per}">\n'
+            f'data-start="{start}" data-duration="{per_this}">\n'
             f'      {media_html}\n'
             f'      {hook_html}\n'
-            f'      <div class="subtitle" id="sub-{i+1}">{caption_html}</div>\n'
+            f'      ' + "\n      ".join(sub_html_parts) + '\n'
             f'    </div>'
         )
-        # Ken Burns: scale + x/y pan over the scene duration
-        timeline_tweens.append(
-            f"tl.to('#bg-{i+1}', {{ scale: {kb['scale']}, x: {kb['x']}, y: {kb['y']}, "
-            f"ease: 'none', duration: {per} }}, {start});"
-        )
-        if i == 0:
+        # Ken Burns: only for image/video scenes, NOT kinetic
+        if media_kind in ("image", "video"):
+            timeline_tweens.append(
+                f"tl.to('#bg-{i+1}', {{ scale: {kb['scale']}, x: {kb['x']}, y: {kb['y']}, "
+                f"ease: 'none', duration: {per_this} }}, {start});"
+            )
+        if i == 0 and media_kind != "kinetic":
             timeline_tweens.append(
                 "tl.fromTo('#opening-hook', { opacity: 0, scale: 0.92 }, "
                 "{ opacity: 1, scale: 1, duration: 0.25, ease: 'power3.out' }, 0.1);"
             )
+            # Hook is a flash of attention-grabbing text in the first
+            # 1.5s; sub-caption 1 takes over from there. Was 4.5s, which
+            # covered the first 1-2 sub-captions and caused visible
+            # overlap with regular subtitles.
             timeline_tweens.append(
-                "tl.to('#opening-hook', { opacity: 0, duration: 0.25 }, 3.8);"
+                "tl.to('#opening-hook', { opacity: 0, duration: 0.25 }, 1.5);"
             )
-        # Subtitle fade in/out (fast, 0.2s in, hold, 0.3s out)
-        timeline_tweens.append(
-            f"tl.fromTo('#sub-{i+1}', {{ opacity: 0 }}, {{ opacity: 1, duration: 0.2 }}, {start});"
-        )
-        if i < n - 1:
+        # 场景间 wipe 已删除（lint 冲突），靠 Ken Burns + 字幕淡出做切换
+        # Sub-caption slots: fade in at slot start, fade out 0.3s before slot end.
+        # The very last sub-caption of the very last scene stays visible to the end.
+        for j in range(n_subs):
+            sub_sel = f"#sub-{i+1}-{j+1}"
+            slot_start, slot_end = sub_slots[j]
+            slot_dur = slot_end - slot_start
+            # Fade-in always 0.2s. Fade-out duration adapts to slot length
+            # so short slots ("邻居？" 0.34s) don't have their fade-out
+            # spill past the slot's natural end — that was the root cause
+            # of "sub-caption appears already faded" for short sentences.
+            if slot_dur >= 0.6:
+                fade_dur = 0.3
+            elif slot_dur >= 0.3:
+                fade_dur = 0.15
+            else:
+                fade_dur = max(0.0, slot_dur - 0.05)
             timeline_tweens.append(
-                f"tl.to('#sub-{i+1}', {{ opacity: 0, duration: 0.3 }}, {start + per - 0.3});"
+                f"tl.fromTo('{sub_sel}', {{ opacity: 0 }}, "
+                f"{{ opacity: 1, duration: 0.2 }}, {slot_start:.2f});"
             )
-            timeline_tweens.append(
-                f"tl.set('#sub-{i+1}', {{ opacity: 0 }}, {start + per});"
-            )
+            is_last = (i == n - 1) and (j == n_subs - 1)
+            if not is_last and fade_dur > 0:
+                # Fade out *within* the slot, not at the very end, so the
+                # next sub-caption can fade in without overlap.
+                fade_out_at = max(slot_end - fade_dur, slot_start + 0.2)
+                timeline_tweens.append(
+                    f"tl.to('{sub_sel}', {{ opacity: 0, duration: {fade_dur:.2f} }}, {fade_out_at:.2f});"
+                )
 
     stage_media_str = "\n".join(stage_media_html)
     scenes_str = "\n".join(scenes_html)
@@ -548,26 +1480,53 @@ def build_image_composition_html(
       transform: scale(1.0) translate(0, 0);
       will-change: transform;
     }}
+    /* Hook 钩子：抖音科普风，去掉黑底黄边，改为居中大白字 + 强黑描边。
+       字号更大、视觉冲击更强，4.5 秒后切到普通字幕。 */
     .hook {{
-      position: absolute; z-index: 3; left: 8%; right: 8%; top: 12%;
-      padding: 28px 36px; color: #fff;
-      font-size: {72 if width >= height else 86}px; line-height: 1.12;
-      font-weight: 900; letter-spacing: 2px; text-align: left;
-      border-left: 10px solid #ffcc33;
-      background: rgba(0,0,0,0.72);
-      text-shadow: 0 4px 18px rgba(0,0,0,0.9);
+      position: absolute; z-index: 3; left: 6%; right: 6%; top: 18%;
+      padding: 0; color: #fff;
+      font-size: {96 if width >= height else 108}px; line-height: 1.1;
+      font-weight: 900; letter-spacing: 2px; text-align: center;
+      border: 0;
+      background: transparent;
+      text-shadow:
+        -4px -4px 0 #000, 4px -4px 0 #000,
+        -4px 4px 0 #000, 4px 4px 0 #000,
+        -4px 0 0 #000, 4px 0 0 #000,
+        0 -4px 0 #000, 0 4px 0 #000,
+        0 8px 24px rgba(0, 0, 0, 0.6);
     }}
+    /* 抖音科普风字幕：白字 + 强黑描边，无背景框，单行短句居中贴底。
+       强描边用 text-shadow 多向叠 8 层模拟 -webkit-text-stroke。 */
     .subtitle {{
-      position: absolute; left: 0; right: 0; bottom: 0;
-      padding: 40px 8% 60px 8%;
-      background: linear-gradient(180deg, transparent 0%, rgba(0,0,0,0.4) 30%, rgba(0,0,0,0.85) 100%);
-      display: flex; flex-direction: column; align-items: center; gap: 8px;
+      position: absolute; left: 50%; bottom: 7%;
+      transform: translateX(-50%);
+      max-width: 86%;
+      padding: 0;
+      background: transparent;
+      border: 0;
+      display: flex; flex-direction: row; align-items: center; justify-content: center;
+      flex-wrap: nowrap;
+      gap: 0;
       opacity: 0;
     }}
     .cap-line {{
-      font-size: {58 if width >= height else 64}px; font-weight: bold; line-height: 1.3; text-align: center;
-      letter-spacing: 2px;
-      text-shadow: 0 4px 20px rgba(0,0,0,0.9), 0 0 8px rgba(0,0,0,0.6);
+      font-size: {70 if width >= height else 80}px; font-weight: 900; line-height: 1.15; text-align: center;
+      letter-spacing: 1px; color: #fff; white-space: nowrap;
+      text-shadow:
+        -3px -3px 0 #000, 3px -3px 0 #000,
+        -3px 3px 0 #000, 3px 3px 0 #000,
+        -3px 0 0 #000, 3px 0 0 #000,
+        0 -3px 0 #000, 0 3px 0 #000,
+        0 6px 18px rgba(0, 0, 0, 0.7);
+    }}
+    /* 场景切换横向 wipe：白条 + 微透明，制造 push 感 */
+    .wipe {{
+      position: absolute; left: 0; right: 0; top: 50%;
+      height: 100%; transform-origin: left center;
+      background: linear-gradient(180deg, transparent 0%, rgba(255,255,255,0.95) 30%, rgba(255,255,255,0.95) 70%, transparent 100%);
+      opacity: 0.85; pointer-events: none; z-index: 10;
+      transform: scaleX(0);
     }}
   </style>
 </head>
@@ -598,6 +1557,8 @@ def build_card_composition_html(chunks, total_duration=30):
     """
     n = len(chunks)
     per = total_duration / n
+    starts = [round(i * per, 3) for i in range(n + 1)]
+    starts[-1] = round(total_duration, 3)
     palette = [
         ("#1e3a8a", "#7c3aed"),  # 1: blue → purple
         ("#7c3aed", "#ec4899"),  # 2: purple → pink
@@ -611,7 +1572,8 @@ def build_card_composition_html(chunks, total_duration=30):
     cards_html = []
     timeline_tweens = []
     for i, chunk in enumerate(chunks):
-        start = i * per
+        start = starts[i]
+        per_this = starts[i + 1] - starts[i]
         c1, c2 = palette[i % len(palette)]
         bg = f"linear-gradient(135deg, {c1} 0%, {c2} 100%)"
         # Wrap text by character (~13 per line for the 1080 width with padding)
@@ -619,7 +1581,7 @@ def build_card_composition_html(chunks, total_duration=30):
         text_html = "".join(f'<div class="line">{escape_html(line)}</div>' for line in lines)
         cards_html.append(
             f'    <div id="card-{i+1}" class="clip" data-track-index="0" '
-            f'data-start="{start}" data-duration="{per}" style="background:{bg};">\n'
+            f'data-start="{start}" data-duration="{per_this}" style="background:{bg};">\n'
             f'      {text_html}\n'
             f'    </div>'
         )
@@ -694,46 +1656,154 @@ def wrap_text_to_lines(text, max_chars=13, max_lines=4):
     return lines
 
 
-def wrap_caption_lines(text, max_chars=10, max_lines=3):
-    """Wrap caption text for 抖音-style subtitles (fewer chars, more lines visible).
+def _tokenize_for_wrap(text):
+    """Tokenize mixed CN/EN text for word-aware line wrapping.
 
-    Chunks are 1-3 sentences, so we want them split to fit 2-3 lines.
+    An alphanumeric run (letters and/or digits, with optional code punctuation
+    like ._-%/) stays as one token — so "95%", "14", "ffmpeg", "m3u8",
+    "h264", "video-studio" all keep their digits and punctuation intact.
+    Each CJK char and each non-alphanumeric punct char is its own token.
+    A single ASCII space is also a token, so "video-studio 拆分" preserves
+    the visible gap between the English term and the CJK run.
+    """
+    import re as _re
+    return _re.findall(r'[A-Za-z0-9][A-Za-z0-9_.\-/%]*|[一-鿿]|[^\s\w]| ', text)
+
+
+def _pack_lines(text, max_chars, max_lines):
+    """Word-aware line packer.
+
+    Greedy fill: walk tokens, add to current line while line stays <= max_chars.
+    On overflow, flush current line; if we're at max_lines, truncate the last
+    line with an ellipsis. English tokens are never split mid-word — if a
+    single token is longer than max_chars, it goes on a line by itself and
+    gets truncated with … so the wrapping remains stable.
     """
     if not text:
         return [""]
-    text = text.strip().rstrip("。！？.!?")
-    chars = list(text)
-    if len(chars) <= max_chars:
-        return [text]
-    # Try to split at sentence boundary if short enough
-    import re as _re
-    parts = _re.split(r'(?<=[。！？,，;；])', text)
-    if len(parts) > 1 and all(len(p) <= max_chars * 2 for p in parts if p.strip()):
-        # Already split into natural phrases
-        result = [p.strip() for p in parts if p.strip()][:max_lines]
-        if len(result) <= max_lines:
-            return result
-    # Fallback: char-based wrapping
+    text = text.strip()
+    if not text:
+        return [""]
+
+    tokens = _tokenize_for_wrap(text)
     lines = []
-    for i in range(0, len(chars), max_chars):
-        lines.append("".join(chars[i:i + max_chars]))
-        if len(lines) >= max_lines:
-            break
-    if len(chars) > max_lines * max_chars and lines:
+    current = []
+    current_len = 0
+
+    def _truncate_last():
+        if not lines:
+            return
         last = lines[-1]
         if len(last) >= max_chars - 1:
-            lines[-1] = last[:-1] + "…"
+            lines[-1] = last[: max_chars - 1] + "…"
         else:
             lines[-1] = last + "…"
-    return lines
+
+    for tok in tokens:
+        tok_len = len(tok)
+        if tok_len > max_chars:
+            if current:
+                lines.append("".join(current))
+                current = []
+                current_len = 0
+            lines.append(tok[: max_chars - 1] + "…")
+            if len(lines) >= max_lines:
+                return lines
+            continue
+        # Allow a single CJK punct to overflow max_chars by up to 2 chars —
+        # an orphan "。" or "，" floating at line start looks like a typo.
+        punct_tolerance = 2 if tok in "。！？；，" else 0
+        if current and current_len + tok_len > max_chars + punct_tolerance:
+            lines.append("".join(current))
+            current = []
+            current_len = 0
+            if len(lines) >= max_lines:
+                _truncate_last()
+                return lines
+        current.append(tok)
+        current_len += tok_len
+
+    if current:
+        if len(lines) >= max_lines:
+            # We're at the line cap; try to append `current` to the last
+            # line by truncating, otherwise drop the trailing content
+            # (already-cleared last line stays as-is).
+            tail = "".join(current)
+            if len(tail) <= max_chars and len(lines[-1]) + len(tail) <= max_chars + 2:
+                lines[-1] = lines[-1] + tail
+            else:
+                _truncate_last()
+        else:
+            lines.append("".join(current))
+
+    if len(lines) >= 2 and len(lines[-1]) < max_chars * 0.4:
+        merged = lines[-2] + lines[-1]
+        if len(merged) <= max_chars:
+            lines = lines[:-2] + [merged]
+    # Strip leading whitespace from each line — a line that starts with " "
+    # is almost always a tokenization artifact (the space used to glue an
+    # English/digit token to the CJK that followed, but the CJK got pushed
+    # to the next line). The reader doesn't need the gap.
+    lines = [ln.lstrip() for ln in lines]
+    # Drop empty lines that may result from the strip.
+    lines = [ln for ln in lines if ln]
+    return lines or [""]
 
 
-def escape_html(s):
-    return (s.replace("&", "&amp;")
-             .replace("<", "&lt;")
-             .replace(">", "&gt;")
-             .replace('"', "&quot;")
-             .replace("'", "&#39;"))
+def wrap_caption_lines(text, max_chars=14, max_lines=2):
+    """Wrap caption text for 抖音-style subtitles. Word-aware; max 2 lines."""
+    if not text:
+        return [""]
+    return _pack_lines(text, max_chars, max_lines)
+
+
+def wrap_to_subcaptions(text, max_chars=18, max_lines=2):
+    """Pack a long chunk into a list of sub-captions (each <= max_lines lines).
+
+    A "sub-caption" is one timed slot in the scene. The render daemon
+    turns each sub-caption into its own <div class="subtitle"> with
+    a fade-in/fade-out window, so a 60-char chunk reads as 2-3
+    sub-captions over the scene's 10s instead of one unreadable blob.
+
+    Returns a list of sub-captions; each sub-caption is a list of lines.
+    """
+    if not text:
+        return [[""]]
+    text = text.strip()
+    if not text:
+        return [[""]]
+
+    import re as _re
+    parts = [p.strip() for p in _re.split(r'(?<=[。！？,，;；])', text) if p.strip()]
+    if not parts:
+        return [_pack_lines(text, max_chars, max_lines)]
+
+    cap_chars = max_chars * max_lines
+    subcaptions = []
+    current_parts = []
+    current_len = 0
+
+    for part in parts:
+        part_len = len(part)
+        if part_len > cap_chars:
+            if current_parts:
+                subcaptions.append(_pack_lines("".join(current_parts), max_chars, max_lines))
+                current_parts = []
+                current_len = 0
+            subcaptions.append(_pack_lines(part, max_chars, max_lines))
+            continue
+        if current_parts and current_len + part_len > cap_chars:
+            subcaptions.append(_pack_lines("".join(current_parts), max_chars, max_lines))
+            current_parts = [part]
+            current_len = part_len
+        else:
+            current_parts.append(part)
+            current_len += part_len
+
+    if current_parts:
+        subcaptions.append(_pack_lines("".join(current_parts), max_chars, max_lines))
+
+    return [s for s in subcaptions if any(line.strip() for line in s)]
 
 
 def get_duration_sec(mp4_path):
@@ -780,17 +1850,13 @@ def process_one(job):
         final_raw = video_dir / "raw.mp4"
         shutil.move(str(out_mp4), str(final_raw))
 
-        short_id = job_id.split("_")[-1] if "_" in job_id else job_id[-6:]
-        slug = safe_slug(theme) or "untitled"
-        r2_url = upload_mp4(final_raw, slug, short_id, "rendered")
         duration = get_duration_sec(final_raw)
 
         job["render"]["mp4_path"] = str(final_raw)
-        job["render"]["mp4_url"] = r2_url
         job["render"]["render_completed_at"] = now_iso()
         job["status"] = "rendered"
         job.setdefault("logs", []).append(
-            f"{now_iso()} render done ({duration:.1f}s, {final_raw.stat().st_size} bytes), uploaded"
+            f"{now_iso()} render done ({duration:.1f}s, {final_raw.stat().st_size} bytes)"
         )
         save_job(job)
         log(f"{job_id} -> rendered, duration={duration:.1f}s")
