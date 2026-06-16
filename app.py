@@ -19,6 +19,8 @@ video-studio Web 后端
   通过 systemd Environment=PATH 同时指向 voice-studio/scripts/，本应用不 import。
 """
 
+import hashlib
+import hmac
 import json
 import os
 import re
@@ -30,7 +32,7 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from flask import Flask, jsonify, render_template, request, send_from_directory
+from flask import Flask, jsonify, redirect, render_template, request, send_from_directory
 
 # ── 路径常量 ───────────────────────────────────────────────────────────
 SKILL_DIR = Path(__file__).resolve().parent
@@ -46,6 +48,21 @@ ASPECT_PRESETS = {
     '9:16': (1080, 1920),
     '1:1': (1080, 1080),
 }
+
+# ── 访问鉴权 ─────────────────────────────────────────────────────────
+# 整个 web 应用共用一个密码。环境变量 APP_PASSWORD 优先（生产推荐用 secret 注入），
+# 默认值 asdf123456 满足本机单用户场景。
+APP_PASSWORD = os.environ.get('APP_PASSWORD', 'asdf123456')
+COOKIE_NAME = 'vs_auth'
+# Cookie 存的是密码的 HMAC 摘要，不是明文 — 即便被截获也不能直接当密码用。
+COOKIE_SECRET = os.environ.get('APP_COOKIE_SECRET', 'video-studio-cookie-secret')
+COOKIE_VALUE = hmac.new(
+    COOKIE_SECRET.encode(), APP_PASSWORD.encode(), hashlib.sha256
+).hexdigest()
+COOKIE_MAX_AGE = 30 * 24 * 3600  # 30 天
+
+# 这些路径不需要登录即可访问
+PUBLIC_PATHS = {'/login', '/api/health'}
 
 # 视频阶段触发器映射（systemd path unit 监听这几个文件）
 VIDEO_TRIGGER_MAP = {
@@ -165,7 +182,58 @@ def list_jobs(mode: str | None = None) -> list[dict]:
     return out
 
 
+# ── 鉴权钩子 ───────────────────────────────────────────────────────
+@app.before_request
+def require_auth():
+    """未登录请求一律拒之门外。/login 页和 /api/health 是公开的（用于监控）。
+
+    - 浏览器访问任意页面 → 302 重定向到 /login
+    - API 调用未带 cookie → 401 JSON
+    """
+    if request.path in PUBLIC_PATHS or request.path.startswith('/static/'):
+        return None
+    expected = request.cookies.get(COOKIE_NAME)
+    if expected and hmac.compare_digest(expected, COOKIE_VALUE):
+        return None
+    if request.path.startswith('/api/') or request.path.startswith('/__internal/'):
+        return jsonify({'error': 'unauthorized'}), 401
+    return redirect('/login')
+
+
 # ── 路由 ─────────────────────────────────────────────────────────────
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    """登录页 / 登录提交。
+
+    GET  → 渲染登录表单
+    POST → 校验密码，匹配则 set_cookie 重定向到 /，否则回到登录页显示错误
+    """
+    error = None
+    if request.method == 'POST':
+        password = (request.form.get('password') or '').strip()
+        if password and hmac.compare_digest(password, APP_PASSWORD):
+            resp = redirect('/')
+            resp.set_cookie(
+                COOKIE_NAME,
+                COOKIE_VALUE,
+                max_age=COOKIE_MAX_AGE,
+                httponly=True,
+                samesite='Lax',
+                path='/',
+            )
+            return resp
+        error = '密码错误'
+    return render_template('login.html', error=error), (401 if error else 200)
+
+
+@app.route('/logout', methods=['POST', 'GET'])
+def logout():
+    """退出登录：清 cookie 并跳回登录页。"""
+    resp = redirect('/login')
+    resp.delete_cookie(COOKIE_NAME, path='/')
+    return resp
+
+
 @app.route('/')
 def index():
     return render_template('index.html')
@@ -212,13 +280,14 @@ def create_job():
             'height': height,
             'aspect_ratio': aspect_ratio,
             'fps': 15,
-            'duration_sec': 150,
+            'duration_sec': 110,
         },
         'audio': {
             'voice': 'Chinese (Mandarin)_Radio_Host',
             'voice_display_name': '电台男主播',
-            'speed': 1.0,
-            'bgm_volume': 0.06,
+            'speed': 1.15,
+            'bgm_enabled': False,
+            'bgm_volume': 0.15,
             'bgm_asset': 'bgm_default.mp3',
         },
         'final': None,

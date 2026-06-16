@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
-<title>video-studio · 抖音短视频自动创作台</title>
+<title>熊喵视频工作台</title>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
   :root {
@@ -184,7 +184,30 @@
     flex-wrap: wrap;
   }
   .meta-row span strong { color: var(--text-2); font-weight: 500; }
-  video { width: 100%; border-radius: var(--radius); background: #000; }
+  /* 视频容器：限制最大尺寸 + 居中显示，避免 16:9 在宽屏上占满整个屏幕。
+     视频元素自己按原始比例缩放：max-width 720 + max-height 70vh 两个上限一起夹，
+     16:9 / 9:16 / 1:1 三档画幅都不会撑爆视口。 */
+  .video-wrap {
+    position: relative;
+    max-width: 720px;
+    max-height: 70vh;
+    margin: 12px auto;
+    background: #000;
+    border-radius: var(--radius);
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+  }
+  .video-wrap video {
+    max-width: 100%;
+    max-height: 70vh;
+    width: auto;
+    height: auto;
+    display: block;
+    border-radius: 0;
+  }
   .actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
   .error-box {
     background: #3a1f1f;
@@ -210,7 +233,7 @@
 <body>
 <div class="layout">
   <header>
-    <h1><span class="emoji">🎬</span>video-studio · 抖音短视频自动创作台</h1>
+    <h1><span class="emoji">🎬</span>熊喵视频工作台</h1>
     <div class="health" id="healthBar"><span class="dot"></span><span id="healthText">检查中…</span></div>
   </header>
 
@@ -246,7 +269,7 @@
         <div class="section-label">
           <span id="detailTheme">—</span>
           <span class="stage" id="detailStage">待生成</span>
-          <span class="eta" id="detailEta">~ 5-7 分钟</span>
+          <span class="eta" id="detailEta">~ 4-5 分钟</span>
         </div>
         <div class="progress-bar"><div id="detailProgress" style="width:0%"></div></div>
         <div class="meta-row">
@@ -270,17 +293,13 @@
         <div class="script-box" id="scriptText"></div>
       </div>
 
-      <div class="block" id="renderedBlock" style="display:none">
-        <div class="section-label">🎞 已渲染（无配音）</div>
-        <video id="renderedPlayer" controls></video>
-        <div class="meta-row" id="renderedMeta"></div>
-      </div>
-
       <div class="block" id="finalBlock" style="display:none">
         <div class="section-label">🎬 成品（已配音 + BGM）</div>
-        <video id="finalPlayer" controls></video>
+        <div class="video-wrap">
+          <video id="finalPlayer" controls></video>
+        </div>
         <div class="actions">
-          <button class="small" id="copyUrlBtn">复制 COS 链接</button>
+          <button class="small" id="copyUrlBtn">复制 R2 链接</button>
           <a class="small" id="downloadLink" download>下载</a>
         </div>
         <div class="meta-row" id="finalMeta"></div>
@@ -384,7 +403,7 @@ function renderDetail(job) {
   document.getElementById('detailTheme').textContent = job.theme || '—';
   document.getElementById('detailStage').textContent = STATE_LABEL[status] || status;
   document.getElementById('detailStage').className = 'stage badge ' + status;
-  document.getElementById('detailEta').textContent = status === 'final' ? '✅ 完成' : `~ 5-7 分钟`;
+  document.getElementById('detailEta').textContent = status === 'final' ? '✅ 完成' : `~ 4-5 分钟`;
   document.getElementById('detailProgress').style.width = (STATE_PROGRESS[status] || 0) + '%';
   document.getElementById('detailId').textContent = job.id || '—';
   const aspect = (job.render && job.render.aspect_ratio) || '—';
@@ -401,30 +420,20 @@ function renderDetail(job) {
     document.getElementById('scriptBlock').style.display = 'none';
   }
 
-  // 已渲染
-  if (job.render && (job.render.mp4_url || job.render.mp4_path)) {
-    document.getElementById('renderedBlock').style.display = 'block';
-    const player = document.getElementById('renderedPlayer');
-    player.src = job.render.mp4_url || ('/' + (job.render.mp4_path || '').replace(/^.*skills\/video-studio\//, ''));
-    document.getElementById('renderedMeta').innerHTML = `
-      <span><strong>时长:</strong> ${job.render.duration_sec || '—'}s</span>
-      <span><strong>FPS:</strong> ${job.render.fps || '—'}</span>
-      <span><strong>尺寸:</strong> ${job.render.width}×${job.render.height}</span>
-    `;
-  } else {
-    document.getElementById('renderedBlock').style.display = 'none';
-  }
-
   // 成品
   if (job.final && (job.final.mp4_url || job.final.mp4_path)) {
     document.getElementById('finalBlock').style.display = 'block';
     const player = document.getElementById('finalPlayer');
-    player.src = job.final.mp4_url || ('/' + (job.final.mp4_path || '').replace(/^.*skills\/video-studio\//, ''));
+    const newSrc = job.final.mp4_url || ('/' + (job.final.mp4_path || '').replace(/^.*skills\/video-studio\//, ''));
+    // 只有 src 真正变化（首加载或换源）才重设，否则 5s 轮询会重新加载视频并把播放位置重置到 0
+    if (player.src !== newSrc) {
+      player.src = newSrc;
+    }
     document.getElementById('finalMeta').innerHTML = `
       <span><strong>时长:</strong> ${job.final.duration_sec || '—'}s</span>
       <span><strong>大小:</strong> ${formatBytes(job.final.size_bytes || 0)}</span>
     `;
-    document.getElementById('downloadLink').href = player.src;
+    document.getElementById('downloadLink').href = newSrc;
   } else {
     document.getElementById('finalBlock').style.display = 'none';
   }
@@ -516,7 +525,7 @@ document.getElementById('copyUrlBtn').addEventListener('click', () => {
   if (!player.src) return;
   navigator.clipboard.writeText(player.src).then(() => {
     document.getElementById('copyUrlBtn').textContent = '✅ 已复制';
-    setTimeout(() => document.getElementById('copyUrlBtn').textContent = '复制 COS 链接', 2000);
+    setTimeout(() => document.getElementById('copyUrlBtn').textContent = '复制 R2 链接', 2000);
   });
 });
 

@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>熊喵视频工作台 · 登录</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  :root {
+    --bg: #0f1115;
+    --surface-1: #181b22;
+    --surface-2: #1f232c;
+    --surface-3: #262b35;
+    --text-1: #e6e8ed;
+    --text-2: #aab0bd;
+    --text-3: #6c7280;
+    --primary: #ff4d6d;
+    --primary-hover: #ff6e8a;
+    --danger: #f87171;
+    --border: #2a2f3a;
+    --radius: 8px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    background: var(--bg);
+    color: var(--text-1);
+    line-height: 1.6;
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .login-card {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 40px 36px;
+    width: 360px;
+    box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+  }
+  .login-title {
+    font-size: 22px;
+    font-weight: 700;
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .login-title .emoji { font-size: 24px; }
+  .login-subtitle {
+    font-size: 13px;
+    color: var(--text-2);
+    margin-bottom: 28px;
+  }
+  label {
+    display: block;
+    font-size: 12px;
+    color: var(--text-2);
+    margin-bottom: 6px;
+    font-weight: 500;
+  }
+  input[type="password"] {
+    width: 100%;
+    background: var(--surface-2);
+    color: var(--text-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px 12px;
+    font-size: 15px;
+    font-family: inherit;
+    transition: border-color 0.15s;
+  }
+  input[type="password"]:focus {
+    outline: none;
+    border-color: var(--primary);
+  }
+  button {
+    width: 100%;
+    margin-top: 18px;
+    background: var(--primary);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius);
+    padding: 11px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  button:hover { background: var(--primary-hover); }
+  button:active { transform: translateY(1px); }
+  .error {
+    margin-top: 14px;
+    padding: 10px 12px;
+    background: rgba(248, 113, 113, 0.12);
+    border: 1px solid rgba(248, 113, 113, 0.4);
+    color: var(--danger);
+    font-size: 13px;
+    border-radius: var(--radius);
+  }
+  .hint {
+    margin-top: 18px;
+    font-size: 11px;
+    color: var(--text-3);
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+  <form class="login-card" method="POST" action="/login" autocomplete="off">
+    <div class="login-title">
+      <span class="emoji">🎬</span>
+      <span>熊喵视频工作台</span>
+    </div>
+    <div class="login-subtitle">请输入访问密码</div>
+
+    <label for="password">密码</label>
+    <input
+      type="password"
+      id="password"
+      name="password"
+      autofocus
+      required
+      spellcheck="false"
+      autocapitalize="off"
+    />
+
+    <button type="submit">进入</button>
+
+    {% if error %}
+    <div class="error">⚠ {{ error }}</div>
+    {% endif %}
+
+    <div class="hint">熊喵视频工作台 · 本机单用户服务</div>
+  </form>
+</body>
+</html>
