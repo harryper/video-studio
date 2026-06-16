@@ -102,11 +102,17 @@ def main():
     parser.add_argument("--out", required=True)
     parser.add_argument("--w", type=int, default=1920)
     parser.add_argument("--h", type=int, default=1080)
+    parser.add_argument("--offset", type=int, default=0,
+                        help="Rotate starting index for variety (default 0)")
     args = parser.parse_args()
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    link = choose_file(search(args.query), args.w, args.h)
+    videos = search(args.query)
+    if args.offset and videos:
+        k = args.offset % len(videos)
+        videos = videos[k:] + videos[:k]
+    link = choose_file(videos, args.w, args.h)
     if not link:
         print(f"NO_RESULT: {args.query}", file=sys.stderr)
         return 1

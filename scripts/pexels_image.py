@@ -70,11 +70,19 @@ def download(url, out_path, timeout=30):
     return out_path
 
 
-def fetch_one(query, out_path, w=DEFAULT_W, h=DEFAULT_H):
-    """Search Pexels + download first result. Returns (out_path, alt) or (None, error)."""
+def fetch_one(query, out_path, w=DEFAULT_W, h=DEFAULT_H, offset=0):
+    """Search Pexels + download (offset-th) result. Returns (out_path, alt) or (None, error).
+
+    `offset` rotates the starting point in the result list, so different jobs
+    / scene indices get different first picks for visual variety. Same offset
+    → same pick (idempotent).
+    """
     photos = search(query, per_page=3)
     if not photos:
         return None, f"no results for query={query!r}"
+    if offset:
+        # Rotate so offset-th photo is tried first, then we wrap around
+        photos = photos[offset % len(photos):] + photos[:offset % len(photos)]
     for p in photos:
         url = build_vertical_url(p["src"], w, h)
         if not url:
@@ -113,11 +121,14 @@ def main():
     ap.add_argument("--w", type=int, default=DEFAULT_W, help="Width (default 1080)")
     ap.add_argument("--h", type=int, default=DEFAULT_H, help="Height (default 1920)")
     ap.add_argument("--per-page", type=int, default=3, help="Photos to try (default 3)")
+    ap.add_argument("--offset", type=int, default=0, help="Rotate starting index for variety (default 0)")
     args = ap.parse_args()
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     photos = search(args.query, per_page=args.per_page)
+    if args.offset:
+        photos = photos[args.offset % len(photos):] + photos[:args.offset % len(photos)]
     for p in photos:
         url = build_vertical_url(p["src"], args.w, args.h)
         if not url:
