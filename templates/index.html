@@ -433,7 +433,9 @@ function renderDetail(job) {
     const player = document.getElementById('finalPlayer');
     const newSrc = job.final.mp4_url || ('/' + (job.final.mp4_path || '').replace(/^.*skills\/video-studio\//, ''));
     // 只有 src 真正变化（首加载或换源）才重设，否则 5s 轮询会重新加载视频并把播放位置重置到 0
-    if (player.src !== newSrc) {
+    // HTMLVideoElement.src 是 IDL 属性，getter 返回绝对 URL；必须用
+    // getAttribute('src') 才能拿到当初赋的字面值（相对路径），跟 newSrc 同一坐标系。
+    if (player.getAttribute('src') !== newSrc) {
       player.src = newSrc;
     }
     document.getElementById('finalMeta').innerHTML = `
