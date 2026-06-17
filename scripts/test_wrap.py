@@ -150,6 +150,45 @@ def test_number_and_percent_preserved():
     assert "14" in joined, f"'14' got mangled: {flat!r}"
 
 
+def test_decimal_ascii_preserved():
+    # "0.5" / "1.5" must never be split into "0." + "5" or "1" + ".5".
+    # The tokenize-glue regex keeps them as one token; the packer has no
+    # reason to break inside.
+    toks = rv._tokenize_for_wrap("前 0.5 秒钩住你")
+    assert "0.5" in toks, f"'0.5' got split: {toks!r}"
+    # Force a narrow wrap that previously split the number; should now
+    # keep it together (and may overflow → ellipsis) rather than split.
+    lines = rv._pack_lines("前 0.5 秒钩住你", max_chars=4, max_lines=2)
+    joined = "".join(lines)
+    assert "0.5" in joined, f"'0.5' got split under narrow wrap: {lines!r}"
+
+
+def test_decimal_fullwidth_preserved():
+    # Full-width period "．" was the actual bug: tokenize didn't include
+    # it in the alnum class, so "0．5" became 3 tokens and the packer
+    # could orphan "5" on the next line.
+    toks = rv._tokenize_for_wrap("前 0．5 秒钩住你")
+    assert "0．5" in toks, f"'0．5' got split: {toks!r}"
+    lines = rv._pack_lines("前 0．5 秒钩住你", max_chars=4, max_lines=2)
+    joined = "".join(lines)
+    assert "0．5" in joined, f"'0．5' got split under narrow wrap: {lines!r}"
+
+
+def test_decimal_with_percent_preserved():
+    # "12.5%" is a common pattern; should be one atomic token.
+    toks = rv._tokenize_for_wrap("增长 12.5% 后回落")
+    assert "12.5%" in toks, f"'12.5%' got split: {toks!r}"
+    # max_chars=8 fits "增长 12.5%" (7 chars) on one line; verify the
+    # number+percent stays glued across the line boundary, not split
+    # between "12." and "5%".
+    lines = rv._pack_lines("增长 12.5% 后回落", max_chars=8, max_lines=2)
+    joined = "".join(lines)
+    assert "12.5%" in joined, f"'12.5%' got split under wrap: {lines!r}"
+    # And no line should start with "5%" or "5 %" (the orphan pattern)
+    for ln in lines:
+        assert not ln.lstrip().startswith("5"), f"orphan '5%' on new line: {ln!r}"
+
+
 # ────────────────────────────────────────────────────────────────────
 
 def main():
@@ -165,6 +204,9 @@ def main():
         test_ellipsis_on_overflow,
         test_number_and_percent_preserved,
         test_realistic_script_chunk,
+        test_decimal_ascii_preserved,
+        test_decimal_fullwidth_preserved,
+        test_decimal_with_percent_preserved,
     ]
     passed = 0
     failed = 0

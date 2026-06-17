@@ -1670,9 +1670,17 @@ def _tokenize_for_wrap(text):
     Each CJK char and each non-alphanumeric punct char is its own token.
     A single ASCII space is also a token, so "video-studio 拆分" preserves
     the visible gap between the English term and the CJK run.
+
+    Decimal-number glue (first branch): keep "0.5" / "0．5" / "1.5" /
+    "12.5%" as one token so the packer never breaks between the digit,
+    the period, and the next digit. Tries this BEFORE the generic alnum
+    branch so the period is part of the match.
     """
     import re as _re
-    return _re.findall(r'[A-Za-z0-9][A-Za-z0-9_.\-/%]*|[一-鿿]|[^\s\w]| ', text)
+    return _re.findall(
+        r'\d+[.,．]\d+[%]?|[A-Za-z0-9][A-Za-z0-9_.\-/%]*|[一-鿿]|[^\s\w]| ',
+        text,
+    )
 
 
 def _pack_lines(text, max_chars, max_lines):
