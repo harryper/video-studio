@@ -1,101 +1,101 @@
 # video-studio
 
-60–90s auto-produced short videos. A sibling of [voice-studio](https://github.com/harryper/voice-studio) that runs the `mode='video'` track of the shared Web workflow: topic in → narration script → hyperframes mp4 → MiniMax TTS voice + BGM → final mp4.
+60–90 秒短视频自动创作。本仓库是 [voice-studio](https://github.com/harryper/voice-studio) 的兄弟项目，承载共享 Web 工作流中 `mode='video'` 这一条线：输入主题 → 旁白脚本 → hyperframes 视频 → MiniMax TTS 配音 + 背景乐 → 最终 mp4。
 
-The web UI, the three pipeline daemons, and the run artifacts all live in this repo. TTS calls (MiniMax) and the voice registry are shared with `voice-studio` — see [Cross-skill dependency](#cross-skill-dependency).
+Web UI、三个流水线守护进程、运行产物都放在本仓库。TTS 调用（MiniMax）和 voice 注册表跟 `voice-studio` 共享——见 [跨 skill 依赖](#跨-skill-依赖)。
 
-## Pipeline
+## 流水线
 
-Three stages, each driven by a systemd path unit that watches a trigger file:
+三个阶段，每段由一个监听触发文件的 systemd path unit 驱动：
 
 ```
                     ┌────────────────────────────────────────────────────┐
-                    │  Web UI  (Flask + gunicorn on :9998)                │
-                    │  POST /api/jobs  →  creates v_<id>.json (pending)   │
-                    │                 →  touches .video-script-trigger    │
+                    │  Web UI  (Flask + gunicorn on :9998)               │
+                    │  POST /api/jobs  →  创建 v_<id>.json (pending)      │
+                    │                 →  触摸 .video-script-trigger      │
                     └────────────────────┬───────────────────────────────┘
                                          ▼
-   .video-script-trigger  ──▶  script daemon   LLM writes narration
+   .video-script-trigger  ──▶  script 守护进程  LLM 写旁白
                                          │  status → ready_script
-                                         ▼   touches .video-render-trigger
-   .video-render-trigger   ──▶  render daemon   puppeteer + headless chrome
-                                         │  produces raw.mp4 (no audio)
+                                         ▼  触摸 .video-render-trigger
+   .video-render-trigger   ──▶  render 守护进程  puppeteer + headless chrome
+                                         │  生成 raw.mp4（无音轨）
                                          │  status → rendered
-                                         ▼   touches .video-narrate-trigger
-   .video-narrate-trigger  ──▶  narrate daemon  TTS + forced alignment
-                                              + BGM mix + ffmpeg merge
+                                         ▼  触摸 .video-narrate-trigger
+   .video-narrate-trigger  ──▶  narrate 守护进程  TTS + 强制对齐
+                                              + 背景乐混音 + ffmpeg 合成
                                               status → final
 ```
 
-Auto-pilot: no human review gates. The user submits a topic, the three stages cascade.
+全自动：没有人审环节。用户只提交主题，三段自动级联。
 
-Trigger files are bare-metal `touch` markers (`.video-{stage}-trigger` in the project root). The web app and daemons all read/write job state in `jobs/video/v_*.json`; the trigger file just wakes the next daemon.
+触发器就是裸的 `touch` 标记文件（项目根目录下的 `.video-{阶段}-trigger`）。Web 应用和守护进程都读写 `jobs/video/v_*.json` 里的 job 状态；触发器只负责唤醒下一段守护进程。
 
-## preview_only mode
+## preview_only 模式
 
-A fast path that skips the full render (image fetch + hyperframes). The narrate daemon runs `scripts/preview_caption_ffmpeg.py` to produce a black-background mp4 with the voice track and burned-in ASS subtitles. ~3–6s for a 60s clip instead of ~5min.
+跳过完整渲染（图片抓取 + hyperframes）的快速路径。narrate 守护进程改跑 `scripts/preview_caption_ffmpeg.py`，生成黑底 mp4，叠配音轨和烧入式 ASS 字幕。60s 片段约 3–6s 出片，比 ~5min 的完整渲染快两个数量级。
 
-The forced-alignment + sub-caption timing logic is shared with the full render path, so preview is the right place to iterate on subtitle/voice sync.
+强制对齐 + 字幕时序逻辑跟完整渲染共用同一套代码，所以 preview 是调试字幕/配音同步的正确入口。
 
-## Forced alignment
+## 强制对齐
 
-TTS-returned word timestamps are *predictions* of when the model plans to speak, not measurements. After ~20s the drift compounds and users perceive "subs lag behind voice". `scripts/align_audio_stable_ts.py` runs Whisper's cross-attention alignment against the actual audio waveform to produce per-character timestamps, written to `runs/{job_id}/alignment.json` with the same schema as the TTS-driven path so downstream consumers don't care which one ran.
+TTS 返回的词级时间戳是模型"打算"什么时候说，不是实测。20s 之后漂移会累积，用户就感觉"字幕比声音慢半拍"。`scripts/align_audio_stable_ts.py` 跑 Whisper 的 cross-attention 对齐，对真实音频波形做逐字时间戳，落到 `runs/{job_id}/alignment.json`，schema 跟 TTS 路径完全一致，下游消费者无感。
 
-The aligner splits the script on `。！？!?.`. The ASCII period is in that set because it correctly terminates English sentences (`i.e. 5` → `i.e.` + `5`) but it also severs decimal numbers (`前 0.5 秒` → `前 0.` + `5 秒`). `_merge_decimal_split_sentences` re-glues pairs that are obviously two halves of the same decimal number — narrow condition so legitimate English splits are preserved.
+aligner 用 `。！？!?.` 切句。ASCII 句点 `.` 在切分集里因为它确实能断英文句子（`i.e. 5` → `i.e.` + `5`），但同一个分隔符也会腰斩小数（`前 0.5 秒` → `前 0.` + `5 秒`）。`_merge_decimal_split_sentences` 把"明显是同一段小数的两半"重新粘回去——条件故意收窄，不吞 `i.e. 5` / `Dr. Smith` 这类合法切分。
 
-## Layout
+## 目录布局
 
 ```
-app.py                          Flask web app (UI + JSON API)
-gunicorn.conf.py                2 sync workers, 60s timeout
-Dockerfile / docker-compose.yml Containerized web; binds :9998
-SKILL.md                        Project status & phase log (P1/P2/P3)
-reference-style-video.md        Style brief fed to the script LLM
-reference-scripts/              Stylistic templates (not copied)
+app.py                          Flask Web 应用（UI + JSON API）
+gunicorn.conf.py                2 个 sync worker，60s 超时
+Dockerfile / docker-compose.yml 容器化 Web；绑定 :9998
+SKILL.md                        项目状态 / 阶段日志（P1/P2/P3）
+reference-style-video.md        喂给脚本 LLM 的风格简报
+reference-scripts/              风格样例（不会被复制）
 scripts/
-  process_video_script_jobs.py    script daemon (LLM narration)
-  process_video_render_jobs.py    render daemon (puppeteer + chrome)
-  process_video_narrate_jobs.py   narrate daemon (TTS + BGM + merge)
-  align_audio_stable_ts.py        Whisper forced-alignment
-  preview_caption_ffmpeg.py      black-bg preview mp4 (fast)
-  preview_caption_video.py       hyperframes preview (unused in preview_only)
-  minimax_tts.py / *_subs.py      TTS wrapper (cross-skill symlink target)
-  pexels_image.py / pexels_video.py  Pexels stock photo/video fetch
-  upload_to_oss.py                publish to R2
-  test_align.py                   unit tests: decimal merge
-  test_wrap.py                    unit tests: caption wrap (CJK/ASCII)
-  test_html_output.py             unit tests: hyperframes HTML
-  voice_registry.json             shared with voice-studio
-systemd/                        3 path units + 3 oneshot services
+  process_video_script_jobs.py    script 守护进程（LLM 旁白）
+  process_video_render_jobs.py    render 守护进程（puppeteer + chrome）
+  process_video_narrate_jobs.py   narrate 守护进程（TTS + 背景乐 + 合成）
+  align_audio_stable_ts.py        Whisper 强制对齐
+  preview_caption_ffmpeg.py      黑底 preview mp4（快速路径）
+  preview_caption_video.py       hyperframes preview（preview_only 不用）
+  minimax_tts.py / *_subs.py      TTS 封装（voice-studio 软链接目标）
+  pexels_image.py / pexels_video.py  Pexels 素材抓取
+  upload_to_oss.py                发布到 R2
+  test_align.py                   单测：小数点合并
+  test_wrap.py                    单测：字幕折行（CJK/ASCII）
+  test_html_output.py             单测：hyperframes HTML
+  voice_registry.json             跟 voice-studio 共享
+systemd/                        3 个 path unit + 3 个 oneshot service
 templates/                      index.html, login.html, video_placeholder.html
-jobs/video/                     active job JSON (one per v_*.json)
-runs/{job_id}/                  per-job artifacts:
-  script.txt                    LLM-written narration
-  alignment.json                per-char + per-sentence TTS timing
-  composition/index.html        hyperframes composition (P2+)
-  video/raw.mp4                 rendered video (no audio)
-  audio/voice.mp3               TTS voice
-  audio/mixed.mp3               voice + BGM
-  final.mp4                     video + audio muxed
-  preview-{N}s.mp4              preview_only output (N = duration_sec)
+jobs/video/                     活跃 job JSON（一个 v_*.json 一条）
+runs/{job_id}/                  每个 job 的产物：
+  script.txt                    LLM 写的旁白
+  alignment.json                逐字 + 逐句 TTS 时序
+  composition/index.html        hyperframes 合成（P2+）
+  video/raw.mp4                 渲染出来的视频（无音轨）
+  audio/voice.mp3               TTS 配音
+  audio/mixed.mp3               配音 + 背景乐
+  final.mp4                     视频 + 音频合成
+  preview-{N}s.mp4              preview_only 输出（N = duration_sec）
 ```
 
-## Cross-skill dependency
+## 跨 skill 依赖
 
-`scripts/minimax_tts.py`, `minimax_tts_subs.py`, and `voice_registry.json` are read from `voice-studio` by absolute path, never imported. The systemd `Environment=PATH` includes `voice-studio/scripts/` so subprocess calls resolve. Default voice is `Chinese (Mandarin)_Radio_Host` (display: 电台男主播, speed 1.0).
+`scripts/minimax_tts.py`、`minimax_tts_subs.py`、`voice_registry.json` 都按绝对路径从 `voice-studio` 读，不通过 import。systemd 的 `Environment=PATH` 把 `voice-studio/scripts/` 加进去，子进程能解析。默认音色是 `Chinese (Mandarin)_Radio_Host`（显示名：电台男主播，speed 1.0）。
 
-`scripts/minimax_api_key.txt` and `pexels_api_key.txt` hold credentials and are gitignored.
+`scripts/minimax_api_key.txt` 和 `pexels_api_key.txt` 持有密钥，被 `.gitignore` 排除。
 
-## Run locally
+## 本地跑
 
-The web container is just the API + UI. Daemons run on the host via systemd and are required for jobs to actually progress.
+Web 容器只跑 API + UI。守护进程在宿主机上由 systemd 跑，job 才能真正推进。
 
 ```bash
 # Web
 pip install -r requirements.txt
 gunicorn -c gunicorn.conf.py app:app      # :9998
 
-# Daemons (host-side, requires voice-studio on PATH)
+# 守护进程（宿主机，需要 voice-studio 在 PATH 里）
 sudo cp systemd/*.service systemd/*.path /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now \
@@ -104,22 +104,22 @@ sudo systemctl enable --now \
   video-studio-narrate-watcher.path
 ```
 
-Health check: `curl http://127.0.0.1:9998/api/health` should return `{"ok": true}`.
+健康检查：`curl http://127.0.0.1:9998/api/health` 应返回 `{"ok": true}`。
 
-Required env vars: `APP_PASSWORD` (login), `APP_COOKIE_SECRET` (cookie HMAC), `VOICE_STUDIO_DIR` (cross-skill path), `TZ=Asia/Shanghai` (host wall clock).
+需要的环境变量：`APP_PASSWORD`（登录）、`APP_COOKIE_SECRET`（cookie HMAC）、`VOICE_STUDIO_DIR`（跨 skill 路径）、`TZ=Asia/Shanghai`（跟宿主机时钟对齐）。
 
-## Tests
+## 测试
 
 ```bash
-python3 scripts/test_align.py     # decimal-period merge: 9/9
-python3 scripts/test_wrap.py      # caption wrap:        14/14
+python3 scripts/test_align.py     # 小数点合并：9/9
+python3 scripts/test_wrap.py      # 字幕折行：  14/14
 python3 scripts/test_html_output.py
 ```
 
-Tests have no external dependencies and run in <1s total. Run them after touching `scripts/align_audio_stable_ts.py`, `scripts/process_video_render_jobs.py` wrap functions, or `templates/index.html`.
+测试没有外部依赖，全部加起来 < 1s。改完 `scripts/align_audio_stable_ts.py`、`scripts/process_video_render_jobs.py` 里的折行函数、或者 `templates/index.html` 之后跑一下。
 
-## Known issues / deferred
+## 已知问题 / 已记未修
 
-- `_load_alignment_subtimes` has a "Re-clamp last sub to scene_end" branch that unconditionally extends the last sub to `scene_end` (variable name says clamp, code says fill). Currently masked by the preview path's `clip_subs()` clipping to `args.duration`, but it's a latent bug.
-- The same function's `contained_idx` filter requires `b <= scene_end+0.05`, so sentences overlapping the end of a short preview are dropped. Fixed locally in `preview_caption_ffmpeg.py` by passing `voice_seconds` as `scene_end`; the full-render path has the same issue.
-- Render daemon: 60s+ videos need `RENDER_TIMEOUT_SEC=600` (already set); 90s+ may need a further bump or lower fps.
+- `_load_alignment_subtimes` 里有一处 "Re-clamp last sub to scene_end"，实际上是无条件把最后一个 sub 延伸到 `scene_end`（变量名说 clamp，代码做 fill）。目前在 preview 路径上被 `clip_subs()` 按 `args.duration` 截掉，没爆出来，但这是潜在 bug。
+- 同一个函数的 `contained_idx` 过滤要求 `b <= scene_end+0.05`，所以跟短 preview 末尾重叠的句子会被丢掉。`preview_caption_ffmpeg.py` 已经在本地用 `voice_seconds` 代替 `scene_end` 绕过；完整渲染路径上同样的问题没修。
+- render 守护进程：60s+ 视频需要 `RENDER_TIMEOUT_SEC=600`（已经设了）；90s+ 可能还得再调或降 fps。
