@@ -75,6 +75,10 @@ VIDEO_TRIGGER_MAP = {
 app = Flask(__name__, template_folder='templates', static_folder='static')
 app.config['JSON_AS_ASCII'] = False
 app.config['JSONIFY_PRETTYPRINT_REGULAR'] = False
+# Single-user / single-pod: cheap per-render stat() is fine, and it lets
+# template edits take effect on the next request instead of waiting for
+# gunicorn workers to recycle (max_requests=500+jitter=100).
+app.config['TEMPLATES_AUTO_RELOAD'] = True
 
 
 # ── 工具函数 ─────────────────────────────────────────────────────────

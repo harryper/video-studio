@@ -358,6 +358,13 @@ checkHealth();
 setInterval(checkHealth, 30000);
 
 // ── 任务列表 ─────────────────────────────────────────────────────
+// job.updated_at of the last renderDetail() call. Used to skip the
+// entire re-render path when the polling response carries no new data
+// — otherwise innerHTML / textContent rewrites on the detail panel
+// reflow the page and the video element, hosing playback even when
+// the video src itself is unchanged.
+let lastRenderedAt = null;
+
 async function refreshJobs() {
   try {
     const r = await fetch(API + '/api/jobs');
@@ -365,7 +372,10 @@ async function refreshJobs() {
     renderJobList(jobs);
     if (currentJob) {
       const found = jobs.find(j => j.id === currentJob.id);
-      if (found) renderDetail(found);
+      if (found && found.updated_at !== lastRenderedAt) {
+        lastRenderedAt = found.updated_at;
+        renderDetail(found);
+      }
     }
   } catch (e) {
     console.error('refreshJobs failed', e);
