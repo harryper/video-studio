@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-MiniMax HTTP TTS for cosmic sleep audio.
-Single-call mode: MiniMax supports up to 10,000 chars per request — enough for full ~3800-4500 char scripts.
+MiniMax HTTP TTS for video narration.
+Single-call mode: MiniMax supports up to 10,000 chars per request — enough for
+full ~300-400 char scripts at the 150s default length.
 """
 import argparse, json, os, re, subprocess, sys
 from pathlib import Path
@@ -49,7 +50,7 @@ def char_len(s: str) -> int:
 
 
 def main():
-    ap = argparse.ArgumentParser(description="MiniMax HTTP TTS for cosmic sleep audio")
+    ap = argparse.ArgumentParser(description="MiniMax HTTP TTS for video narration")
     ap.add_argument("--text", required=True, help="Input text/markdown file")
     ap.add_argument("--out", required=True, help="Output narration audio (mp3)")
     ap.add_argument("--voice", default=DEFAULT_VOICE)
