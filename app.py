@@ -190,7 +190,7 @@ def require_auth():
     - 浏览器访问任意页面 → 302 重定向到 /login
     - API 调用未带 cookie → 401 JSON
     """
-    if request.path in PUBLIC_PATHS or request.path.startswith('/static/'):
+    if request.path in PUBLIC_PATHS or request.path.startswith(('/static/', '/runs/')):
         return None
     expected = request.cookies.get(COOKIE_NAME)
     if expected and hmac.compare_digest(expected, COOKIE_VALUE):
@@ -267,6 +267,20 @@ def create_job():
         return jsonify({'error': f'画幅必须是 {", ".join(ASPECT_PRESETS.keys())}'}), 400
     width, height = ASPECT_PRESETS[aspect_ratio]
 
+    # Duration: clamp to [5, 600]s, default 110. Preview-only flows often
+    # pass short durations (10-30s) for fast demos.
+    duration_sec = data.get('duration_sec', 110)
+    try:
+        duration_sec = int(duration_sec)
+    except (TypeError, ValueError):
+        duration_sec = 110
+    duration_sec = max(5, min(600, duration_sec))
+
+    # preview_only: skip the full render pipeline (image fetch + hyperframes).
+    # Script daemon sets status=rendered directly; narrate daemon runs
+    # preview_caption_ffmpeg to produce a black-bg mp4.
+    preview_only = bool(data.get('preview_only', False))
+
     video_id = 'v_' + str(uuid.uuid4())[:8]
     job = {
         'id': video_id,
@@ -280,7 +294,8 @@ def create_job():
             'height': height,
             'aspect_ratio': aspect_ratio,
             'fps': 15,
-            'duration_sec': 110,
+            'duration_sec': duration_sec,
+            'preview_only': preview_only,
         },
         'audio': {
             'voice': 'Chinese (Mandarin)_Radio_Host',
@@ -403,6 +418,16 @@ def list_jobs_api():
 @app.route('/static/<path:filename>')
 def static_files(filename):
     return send_from_directory('static', filename)
+
+
+# Serve generated mp4s (runs/<job_id>/*.mp4) for inline <video> playback.
+# Path traversal: flask's send_from_directory guards this already, but we
+# also reject anything that contains '..' as belt-and-suspenders.
+@app.route('/runs/<path:filename>')
+def runs_files(filename):
+    if '..' in filename:
+        return jsonify({'error': 'invalid path'}), 400
+    return send_from_directory(str(SKILL_DIR / 'runs'), filename)
 
 
 # ── 错误处理 ───────────────────────────────────────────────────────

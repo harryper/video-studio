@@ -46,6 +46,7 @@ DRIFT_SAFETY_SECONDS = 5
 
 SCRIPT_TRIGGER = SKILL_DIR / ".video-script-trigger"
 RENDER_TRIGGER = SKILL_DIR / ".video-render-trigger"
+NARRATE_TRIGGER = SKILL_DIR / ".video-narrate-trigger"
 LAST_RUN_MARKER = SKILL_DIR / ".video-script-writer.lastrun"
 REFERENCE_STYLE = Path("/root/.openclaw/workspace/skills/video-studio/reference-style-video.md")
 LOG_FILE = Path("/var/log/video-studio/video-script-watcher.log")
@@ -244,7 +245,10 @@ def finalize_from_script_file(job):
     script = script_path.read_text(encoding="utf-8").strip()
     if not script:
         return False
-    if len(script) < MIN_SCRIPT_CHARS or len(script) > MAX_SCRIPT_CHARS:
+    # preview_only: accept shorter scripts (10s demo scripts can be <450 chars)
+    is_preview = bool((job.get("render") or {}).get("preview_only", False))
+    min_chars = 50 if is_preview else MIN_SCRIPT_CHARS
+    if len(script) < min_chars or len(script) > MAX_SCRIPT_CHARS:
         return False
     # RC2/RC5: prefer the rate measured by the last few final jobs (narrate
     # daemon writes script_meta.actual_rate = voice_seconds/char_count, i.e.
@@ -277,12 +281,24 @@ def finalize_from_script_file(job):
     else:
         effective_rate = ESTIMATED_CHARS_PER_SECOND * speed
     target_seconds = round(char_count / effective_rate)
-    # Rate is now data-driven; keep a small 2% + 2s tail for sentence-final
-    # pauses instead of the old 8% + 5s double buffer.
-    video_duration_sec = max(
-        round(target_seconds * 1.02) + 2, 30,
-    )
-    job["status"] = "ready_script"
+    # preview_only: respect user-specified duration exactly (10s demo =
+    # user-supplied). Non-preview: keep a small 2% + 2s tail for
+    # sentence-final pauses instead of the old 8% + 5s double buffer;
+    # 30s minimum guards against microscopic shorts breaking the
+    # hyperframes renderer.
+    preview_only = bool((job.get("render") or {}).get("preview_only", False))
+    if preview_only:
+        video_duration_sec = int((job.get("render") or {}).get("duration_sec", 10))
+        # Trust voice_seconds is close to user target; do NOT add +2 tail.
+        # If TTS drifts shorter we let the mp4 end with a brief black tail.
+    else:
+        video_duration_sec = max(
+            round(target_seconds * 1.02) + 2, 30,
+        )
+    # preview_only: skip the full render daemon (image fetch + hyperframes).
+    # Status is set to "rendered" so the narrate daemon picks it up directly
+    # and runs preview_caption_ffmpeg to produce a black-bg mp4.
+    job["status"] = "rendered" if preview_only else "ready_script"
     job["script"] = script
     job["script_meta"] = {
         "char_count": char_count,
@@ -330,15 +346,27 @@ def process_one(job):
         return False
 
     if updated.get("status") == "ready_script" and (updated.get("script") or "").strip():
-        if not MIN_SCRIPT_CHARS <= len(updated["script"]) <= MAX_SCRIPT_CHARS:
+        # preview_only: skip the 450-char minimum (10s demo scripts are short)
+        is_preview = bool((updated.get("render") or {}).get("preview_only", False))
+        min_chars = 50 if is_preview else MIN_SCRIPT_CHARS
+        if not min_chars <= len(updated["script"]) <= MAX_SCRIPT_CHARS:
             updated["status"] = "error"
             updated["error"] = (
                 f"script length {len(updated['script'])} outside "
-                f"{MIN_SCRIPT_CHARS}-{MAX_SCRIPT_CHARS} chars"
+                f"{min_chars}-{MAX_SCRIPT_CHARS} chars"
             )
             save_job(updated)
-            log(f"{job['id']} failed length check: {len(updated['script'])}")
+            log(f"{job['id']} failed length check: {len(updated['script'])} (preview={is_preview})")
             return False
+        # preview_only: downgrade from ready_script -> rendered so the
+        # cascade below does not touch the render trigger (which would
+        # kick off the full image-fetch pipeline). Narrate daemon picks
+        # up status=rendered jobs and runs preview_caption_ffmpeg.
+        if is_preview:
+            updated["status"] = "rendered"
+            save_job(updated)
+            log(f"{job['id']} rendered (preview_only, {len(updated['script'])} chars)")
+            return True
         log(f"{job['id']} ready_script ({len(updated['script'])} chars)")
         return True
 
@@ -407,13 +435,30 @@ def main():
         LAST_RUN_MARKER.write_text(f"{time.time()}\n", encoding="utf-8")
         log(f"processed={processed}")
 
-        # Cascade: touch render trigger if any job reached ready_script
-        if any(
-            (job_path(j["id"]).exists() and load_job(job_path(j["id"])).get("status") == "ready_script")
-            for j in jobs
-        ):
-            RENDER_TRIGGER.touch()
+        # Cascade: touch render trigger if any job reached ready_script.
+        # For preview_only jobs we skip the render daemon and go straight
+        # to narrate (black-bg ffmpeg), so touch NARRATE_TRIGGER instead.
+        touched_render = False
+        touched_narrate = False
+        for j in jobs:
+            jp = job_path(j["id"])
+            if not jp.exists():
+                log(f"  cascade: skip {j['id']} (json missing)")
+                continue
+            cur = load_job(jp)
+            st = cur.get("status")
+            is_preview = bool((cur.get("render") or {}).get("preview_only", False))
+            log(f"  cascade: {j['id']} status={st!r} preview={is_preview}")
+            if st == "rendered" and is_preview:
+                NARRATE_TRIGGER.touch()
+                touched_narrate = True
+            elif st == "ready_script":
+                RENDER_TRIGGER.touch()
+                touched_render = True
+        if touched_render:
             log(f"touched {RENDER_TRIGGER.name}")
+        if touched_narrate:
+            log(f"touched {NARRATE_TRIGGER.name} (preview_only)")
     return 0
 
 

@@ -99,8 +99,13 @@ def pending_jobs():
             job = load_job(path)
         except (OSError, json.JSONDecodeError):
             continue
-        if job.get("mode") == "video" and job.get("status") == "ready_script":
-            jobs.append(job)
+        if job.get("mode") != "video" or job.get("status") != "ready_script":
+            continue
+        # Defense in depth: preview_only jobs go straight to narrate for
+        # black-bg ffmpeg, skipping the full image-fetch pipeline.
+        if (job.get("render") or {}).get("preview_only"):
+            continue
+        jobs.append(job)
     return sorted(jobs, key=lambda j: j.get("updated_at", ""))
 
 

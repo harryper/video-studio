@@ -24,12 +24,13 @@ from datetime import datetime
 from pathlib import Path
 
 
-# TTS scripts (minimax_tts.py, voice_registry.json) live alongside this
-# file in scripts/. Override VOICE_STUDIO_DIR env var to use a different
-# location (e.g. a shared scripts dir) — kept for backwards compat.
+# TTS scripts (minimax_tts.py, voice_registry.json) live in the
+# skill's scripts/ dir. VOICE_STUDIO_DIR points at the skill root so
+# `… / "scripts" / …` resolves correctly; override via env var to share
+# scripts with another skill (kept for backwards compat).
 VOICE_STUDIO_DIR = Path(os.environ.get(
     "VOICE_STUDIO_DIR",
-    str(Path(__file__).resolve().parent),
+    str(Path(__file__).resolve().parents[1]),
 ))
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
@@ -281,6 +282,99 @@ def _build_alignment_from_tts_subs(job_id):
     return True
 
 
+def _build_alignment_equal_time(job_id):
+    """Last-resort alignment: distribute voice_seconds evenly across chars.
+
+    Used when both stable-ts and TTS-word-timestamp paths fail (missing
+    script.txt, network errors, model unloadable). Accuracy is poor
+    (drifts like the original TTS path) but it produces a valid
+    alignment.json so preview_caption_ffmpeg can run.
+
+    Reads:
+      - runs/<id>/script.txt
+      - runs/<id>/audio/voice.mp3  (for voice_seconds via ffprobe)
+    Writes:
+      - runs/<id>/alignment.json
+    """
+    import json as _json
+    import subprocess as _sp
+    run_dir = VIDEO_RUNS_DIR / job_id
+    script_path = run_dir / "script.txt"
+    voice_mp3 = run_dir / "audio" / "voice.mp3"
+    out_json = run_dir / "alignment.json"
+    if not script_path.exists() or not voice_mp3.exists():
+        return False
+    script = script_path.read_text(encoding="utf-8").strip()
+    if not script:
+        return False
+    # voice_seconds via ffprobe
+    try:
+        r = _sp.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", str(voice_mp3)],
+            capture_output=True, text=True, timeout=10,
+        )
+        voice_sec = float(r.stdout.strip() or "0")
+    except Exception:
+        return False
+    if voice_sec <= 0:
+        return False
+    # Walk chars (skip whitespace), assign start/end by cumulative fraction
+    chars_out = []
+    n = sum(1 for c in script if c.strip() and c != "\n")
+    if n == 0:
+        return False
+    idx = 0
+    for c in script:
+        if c.isspace() or c == "\n":
+            continue
+        start = (idx / n) * voice_sec
+        end = ((idx + 1) / n) * voice_sec
+        chars_out.append({
+            "c": c,
+            "start": round(start, 3),
+            "end": round(end, 3),
+            "word": c,
+        })
+        idx += 1
+    # Sentence windows (split on Chinese / Western end punctuation)
+    sentences = []
+    cur = []
+    next_idx = 0
+    for ch in chars_out:
+        cur.append(ch)
+        if ch["c"] in "。！？!?\.":
+            text = "".join(c["c"] for c in cur)
+            sentences.append({
+                "text": text,
+                "start": cur[0]["start"],
+                "end": cur[-1]["end"],
+                "word_indices": list(range(next_idx, next_idx + len(cur))),
+            })
+            next_idx += len(cur)
+            cur = []
+    if cur:
+        text = "".join(c["c"] for c in cur)
+        sentences.append({
+            "text": text,
+            "start": cur[0]["start"],
+            "end": cur[-1]["end"],
+            "word_indices": list(range(next_idx, next_idx + len(cur))),
+        })
+    out = {
+        "voice_seconds": round(voice_sec, 3),
+        "script_chars": len(script),
+        "model": "equal-time-fallback",
+        "word_count": len(chars_out),
+        "char_count_aligned": len(chars_out),
+        "sentence_count": len(sentences),
+        "chars": chars_out,
+        "sentences": sentences,
+    }
+    out_json.write_text(_json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
+    return True
+
+
 def _resolve_raw_mp4(job_id):
     """Path to the canonical raw.mp4 that render_placeholder writes to.
 
@@ -482,37 +576,123 @@ def process_one(job):
         script = (job.get("script") or "").strip()
         if not script:
             raise RuntimeError("job.script is empty; cannot narrate")
+        # Persist script to runs/<id>/script.txt — alignment builders
+        # (stable-ts, TTS subs, equal-time fallback) all read from this
+        # path. Without this, resetting a job to status=rendered would
+        # make stable-ts fail with "script file not found" and the TTS
+        # path silently produces no alignment.json.
+        run_dir.mkdir(parents=True, exist_ok=True)
+        script_path = run_dir / "script.txt"
+        if not script_path.exists() or script_path.read_text(encoding="utf-8").strip() != script:
+            script_path.write_text(script, encoding="utf-8")
 
         # 1. TTS audio (local scripts/minimax_tts.py)
         voice_mp3 = audio_dir / "voice.mp3"
         tts_synthesize(script, voice, speed, voice_mp3)
         log(f"  TTS done: {voice_mp3.stat().st_size} bytes")
 
-        # 1a. Per-word timestamps from the same TTS endpoint. Independent
-        # of audio: makes a second HTTP request with subtitle_enable=true
-        # + subtitle_type=word, downloads data.subtitle_file JSON. Failure
-        # here is non-fatal — render daemon will fall back to equal-time.
+        # 1a. Per-char timing — choose between TTS-provided (fast, drifts
+        # ~50-300ms from actual audio) and stable-ts forced alignment
+        # (~50s CPU inference but measured from the actual audio waveform).
+        # Default is "stable-ts" — see `validate_alignment.py` for evidence.
+        alignment_engine = audio_cfg.get("alignment_engine", "stable-ts")
         sub_json = audio_dir / "voice.subtitle.json"
-        try:
-            _fetch_tts_subs(script, voice, speed, sub_json)
-            log(f"  TTS subs fetched: {sub_json.stat().st_size} B")
-        except Exception as e:
-            log(f"  ⚠ TTS subs fetch failed (non-fatal): {e}")
+        alignment_path = VIDEO_RUNS_DIR / job_id / "alignment.json"
 
-        # 1b. Build alignment.json from TTS-provided word timestamps.
-        # No subprocess, no ASR — server guarantees per-char ms accuracy.
-        if sub_json.exists():
+        if alignment_engine == "stable-ts":
+            # Skip the TTS subtitle_file fetch — stable-ts measures timing
+            # from voice.mp3 directly, no need for a 2nd TTS HTTP call.
+            log(f"  alignment_engine=stable-ts, skipping TTS subs fetch")
+            script_path = VIDEO_RUNS_DIR / job_id / "script.txt"
+            result = subprocess.run(
+                [sys.executable, "scripts/align_audio_stable_ts.py",
+                 "--voice", str(voice_mp3),
+                 "--script", str(script_path),
+                 "--out", str(alignment_path),
+                 "--model", audio_cfg.get("stable_ts_model", "small")],
+                capture_output=True, text=True, timeout=600,
+            )
+            if result.returncode != 0:
+                log(f"  ⚠ stable-ts failed, falling back to TTS path: "
+                    f"{(result.stderr or result.stdout)[-200:]}")
+                # Fall through to TTS path
+                alignment_engine = "tts"
+            else:
+                log(f"  alignment built from stable-ts (audio-measured)")
+
+        if alignment_engine == "tts":
+            # TTS subtitle_file is independent of audio: makes a 2nd HTTP
+            # request with subtitle_enable=true + subtitle_type=word, then
+            # downloads data.subtitle_file. Failure here is non-fatal.
             try:
-                if _build_alignment_from_tts_subs(job_id):
-                    log(f"  alignment built from TTS word timestamps")
-                else:
-                    log(f"  ⚠ subtitle JSON present but alignment build returned False; falling back to equal-time")
+                _fetch_tts_subs(script, voice, speed, sub_json)
+                log(f"  TTS subs fetched: {sub_json.stat().st_size} B")
             except Exception as e:
-                log(f"  ⚠ alignment from TTS failed (non-fatal): {e}")
-        else:
-            log(f"  ⚠ no voice.subtitle.json; falling back to equal-time")
+                log(f"  ⚠ TTS subs fetch failed (non-fatal): {e}")
 
-        # 1c. Re-render video with alignment-driven scene timing
+            if sub_json.exists():
+                try:
+                    if _build_alignment_from_tts_subs(job_id):
+                        log(f"  alignment built from TTS word timestamps")
+                    else:
+                        log(f"  ⚠ subtitle JSON present but alignment build returned False; falling back to equal-time")
+                except Exception as e:
+                    log(f"  ⚠ alignment from TTS failed (non-fatal): {e}")
+            else:
+                log(f"  ⚠ no voice.subtitle.json; falling back to equal-time")
+
+        # 1b. Last-resort equal-time alignment: if neither stable-ts nor
+        # TTS-word path produced alignment.json (network failure, missing
+        # script.txt, model unloadable), synthesize a uniform-time split
+        # from voice.mp3's measured duration. Accuracy is poor (drifts
+        # like the original TTS path) but unblocks preview_only.
+        if not alignment_path.exists():
+            try:
+                if _build_alignment_equal_time(job_id):
+                    log(f"  alignment built from equal-time fallback")
+                else:
+                    log(f"  ⚠ equal-time alignment also failed (missing script or voice?)")
+            except Exception as e:
+                log(f"  ⚠ equal-time alignment error: {e}")
+
+        # 1c. Preview-only fast path: skip the full render pipeline (image
+        # fetch + hyperframes), burn captions into a black canvas via
+        # ffmpeg, mux voice. Marks job final with preview_file.
+        render_cfg = job.get("render", {})
+        if render_cfg.get("preview_only", False):
+            duration_int = max(1, int(round(render_cfg.get("duration_sec", 10))))
+            preview_mp4 = VIDEO_RUNS_DIR / job_id / f"preview-{duration_int}s.mp4"
+            log(f"  preview_only: building black-bg preview ({duration_int}s) via ffmpeg")
+            result = subprocess.run(
+                [sys.executable, "scripts/preview_caption_ffmpeg.py",
+                 "--job-id", job_id,
+                 "--duration", str(duration_int)],
+                capture_output=True, text=True, timeout=300,
+            )
+            if result.returncode != 0 or not preview_mp4.exists():
+                log(f"  ⚠ preview generation failed: "
+                    f"{(result.stderr or result.stdout)[-200:]}")
+                raise RuntimeError(
+                    f"preview generation failed (exit={result.returncode})")
+            size_bytes = preview_mp4.stat().st_size
+            log(f"  preview done: {preview_mp4} ({size_bytes} bytes)")
+            job["final"] = {
+                "mp4_path": str(preview_mp4),
+                "mp4_url": f"/runs/{job_id}/{preview_mp4.name}",
+                "duration_sec": duration_int,
+                "size_bytes": size_bytes,
+                "preview_only": True,
+            }
+            job["status"] = "final"
+            job.setdefault("logs", []).append(
+                f"{now_iso()} preview_only final done: {duration_int}s, "
+                f"{size_bytes} bytes"
+            )
+            save_job(job)
+            log(f"{job_id} -> final (preview_only), duration={duration_int}s")
+            return True
+
+        # 1d. Re-render video with alignment-driven scene timing
         # (RC3 + pipeline order fix). Render daemon ran first (with no
         # alignment.json available), so its video-only.mp4 used equal-time
         # splits. Now that alignment.json exists, re-run render_placeholder

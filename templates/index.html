@@ -252,6 +252,13 @@
           <option value="1:1">1:1（方形 / 1080×1080）</option>
         </select>
       </div>
+      <div class="form-group">
+        <label>时长(秒, 5-600, 默认 110)</label>
+        <input type="number" id="durationInput" min="5" max="600" value="110" step="5">
+      </div>
+      <div class="form-group">
+        <label><input type="checkbox" id="previewOnlyInput"> 仅生成黑屏字幕预览（跳过图片生成 + 渲染, 用 ffmpeg 烧字幕到黑底）</label>
+      </div>
       <button id="createBtn" class="primary full">创建视频任务</button>
     </div>
 
@@ -461,6 +468,8 @@ document.getElementById('createBtn').addEventListener('click', async () => {
   const theme = document.getElementById('themeInput').value.trim();
   if (!theme) { alert('请输入主题'); return; }
   const aspect_ratio = document.getElementById('aspectRatio').value;
+  const duration_sec = parseInt(document.getElementById('durationInput').value, 10) || 110;
+  const preview_only = document.getElementById('previewOnlyInput').checked;
   const btn = document.getElementById('createBtn');
   btn.disabled = true;
   btn.textContent = '创建中…';
@@ -468,7 +477,7 @@ document.getElementById('createBtn').addEventListener('click', async () => {
     const r = await fetch(API + '/api/jobs', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({theme, aspect_ratio, mode: 'video'}),
+      body: JSON.stringify({theme, aspect_ratio, duration_sec, preview_only, mode: 'video'}),
     });
     const d = await r.json();
     if (!r.ok) throw new Error(d.error || '创建失败');
