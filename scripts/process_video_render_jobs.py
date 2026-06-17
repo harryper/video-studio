@@ -773,10 +773,21 @@ def _load_alignment_subtimes(job_id, scene_times, chunks, width=DEFAULT_WIDTH, h
         if scene_dur <= 0 or not chunk:
             out.append([])
             continue
+        # Include any sentence that overlaps with the scene, not just
+        # ones entirely contained within it. The previous strict filter
+        # (`a >= scene_start-0.05 and b <= scene_end+0.05`) dropped
+        # sentences that crossed the scene boundary — e.g. a 6s sentence
+        # starting at scene_end-2s would vanish from both scenes' subs
+        # even though its middle 4s falls inside scene N and its tail 2s
+        # falls inside scene N+1. For cross-boundary sentences the subs
+        # are clipped to the scene by the `else` branch below (or by
+        # clip_subs in the preview path), so the same sentence appearing
+        # in both scenes' contained_idx is harmless — each scene gets
+        # the portion that falls inside its time range.
         contained_idx = [
             j for j, (a, b) in enumerate(sent_spans)
-            if a >= scene_start - 0.05 and b <= scene_end + 0.05
-            and a < scene_end and b > scene_start  # exclude cross-boundary (zero-duration) sentences
+            if a < scene_end + 0.05 and b > scene_start - 0.05
+            and a < scene_end and b > scene_start
         ]
         if not contained_idx:
             out.append([])
@@ -924,9 +935,17 @@ def _load_alignment_subtimes(job_id, scene_times, chunks, width=DEFAULT_WIDTH, h
             if b - a < MIN_SUB_DUR:
                 b = a + MIN_SUB_DUR
             adjusted.append((s_lines, a, b))
-        # Re-clamp last sub to scene_end
-        last_lines, last_a, _ = adjusted[-1]
-        if last_a < scene_end:
+        # Re-clamp last sub to scene_end — only when the sub actually
+        # extends past the scene end. The previous code checked `last_a
+        # < scene_end` and unconditionally set the end to scene_end,
+        # which is a *fill* not a clamp: it made the last sub display
+        # long after the voice had moved on (e.g. sentence [0]'s tail
+        # persisted to the end of a 10s preview even though the next
+        # sentence started at 4.88s). The correct behavior is truncation
+        # only — if the sub fits inside the scene, leave its end alone
+        # and let the gap to scene_end be silence.
+        last_lines, last_a, last_b = adjusted[-1]
+        if last_b > scene_end:
             adjusted[-1] = (last_lines, last_a, scene_end)
         # Apply SUB_GAP: each sub's start is the previous sub's end + gap
         # (skipping the first sub, which is clamped to scene_start).

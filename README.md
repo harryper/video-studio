@@ -111,15 +111,15 @@ sudo systemctl enable --now \
 ## 测试
 
 ```bash
-python3 scripts/test_align.py     # 小数点合并：9/9
-python3 scripts/test_wrap.py      # 字幕折行：  14/14
+python3 scripts/test_align.py              # 小数点合并：         9/9
+python3 scripts/test_wrap.py               # 字幕折行：          14/14
+python3 scripts/test_alignment_subtimes.py # _load_alignment_subtimes： 3/3
 python3 scripts/test_html_output.py
 ```
 
-测试没有外部依赖，全部加起来 < 1s。改完 `scripts/align_audio_stable_ts.py`、`scripts/process_video_render_jobs.py` 里的折行函数、或者 `templates/index.html` 之后跑一下。
+测试没有外部依赖，全部加起来 < 1s。改完 `scripts/align_audio_stable_ts.py`、`scripts/process_video_render_jobs.py` 里的折行函数、`_load_alignment_subtimes`、或者 `templates/index.html` 之后跑一下。
 
 ## 已知问题 / 已记未修
 
-- `_load_alignment_subtimes` 里有一处 "Re-clamp last sub to scene_end"，实际上是无条件把最后一个 sub 延伸到 `scene_end`（变量名说 clamp，代码做 fill）。目前在 preview 路径上被 `clip_subs()` 按 `args.duration` 截掉，没爆出来，但这是潜在 bug。
-- 同一个函数的 `contained_idx` 过滤要求 `b <= scene_end+0.05`，所以跟短 preview 末尾重叠的句子会被丢掉。`preview_caption_ffmpeg.py` 已经在本地用 `voice_seconds` 代替 `scene_end` 绕过；完整渲染路径上同样的问题没修。
 - render 守护进程：60s+ 视频需要 `RENDER_TIMEOUT_SEC=600`（已经设了）；90s+ 可能还得再调或降 fps。
+- `_load_alignment_subtimes` 跨场景句子的归属（句子同时落在两个场景里时，分配给哪个场景的策略）当前是"两端都收、各自剪到自己的时间范围"，对超长句子可能会出现两个场景都各显示一段的轻微重叠。常见用法下场景按句界切，触发不到。
