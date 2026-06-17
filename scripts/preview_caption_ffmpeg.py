@@ -196,7 +196,16 @@ def main() -> int:
     if not chunks or not chunks[0]:
         print("ERROR: split_script_to_cards returned empty", file=sys.stderr)
         return 1
-    scene_times = [(0.0, args.duration)]
+    # Use voice_seconds (not args.duration) as scene_end so that sentences
+    # overlapping the audio's full range are included in contained_idx.
+    # clip_subs() later clips the resulting subs down to args.duration, so
+    # only the first args.duration of subs will actually be visible. If we
+    # used args.duration here, the contained_idx filter in
+    # _load_alignment_subtimes (which requires b <= scene_end+0.05) would
+    # reject every sentence whose span extends past the video length —
+    # leaving the rendered mp4 stuck on the first sentence's tail for the
+    # rest of the video (e.g. 10s preview of a 14.4s audio).
+    scene_times = [(0.0, voice_seconds)]
 
     subtimes = _load_alignment_subtimes(
         args.job_id, scene_times, chunks,

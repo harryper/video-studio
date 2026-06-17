@@ -42,6 +42,77 @@ def _normalize_script_for_whisper(text: str) -> str:
     return " ".join(text.split())  # collapse newlines + extra whitespace
 
 
+def _merge_decimal_split_sentences(sentences: list[dict]) -> list[dict]:
+    """Re-glue sentence pairs that were split mid-decimal.
+
+    The sentence-build loop in `_build_alignment_from_subs` splits on
+    `。！？!?.` (see its line 139). The ASCII period `.` is in that set
+    because it correctly terminates English sentences ("i.e. 5" →
+    "i.e." + "5"), but the same delimiter ALSO severs decimal numbers:
+    "前 0.5 秒钩住你" → "前 0." + "5 秒钩住你". The downstream
+    preview_caption_ffmpeg path uses sentences[].text verbatim as
+    sub-caption text, so a mid-decimal split shows up as "前0." on one
+    line and "5秒钩住你" on the next in the rendered mp4.
+
+    Condition for re-glue (intentionally narrow to avoid swallowing
+    legitimate English splits):
+      sentences[i].text   ends with '.' (or '．' full-width) AND
+                          the char immediately before the period is
+                          a digit (so the period is a decimal point,
+                          not a sentence terminator)
+      sentences[i+1].text starts with a digit
+
+    Why this is the right shape: the sentence-build loop splits AT
+    the period (the period is the trigger char and stays attached to
+    the LEFT fragment), so a decimal split looks like '前0.' / '5秒…',
+    not '前0' / '.5秒…'. The `.[-2].isdigit()` check distinguishes
+    decimal-point periods (re-glue) from sentence-terminator periods
+    like "i.e." (keep split).
+
+    Re-scans from the same index after each merge so chained splits
+    like "1.5.5" → ["1.", "5.", "5"] collapse in one pass.
+
+    Returns a NEW list; the input is not mutated. Each merged entry
+    concatenates text + word_indices and takes the wider [start, end]
+    time span. Stable-ts segment boundaries inside a sentence are
+    ignored — the merged entry's timing is the union of both halves,
+    which is the right behavior for the consumer (the line displays
+    continuously across the silence gap).
+    """
+    if not sentences:
+        return sentences
+    merged = list(sentences)
+    i = 0
+    while i < len(merged) - 1:
+        cur_s = merged[i]
+        nxt_s = merged[i + 1]
+        cur_text = cur_s.get("text", "")
+        nxt_text = nxt_s.get("text", "")
+        # Decimal split pattern: cur ends with '.' or '．' AND the char
+        # before the period is a digit (so the period is a decimal
+        # point, not "i.e." or "Dr.") AND next starts with a digit
+        # (so it's the continuation of the same decimal number).
+        is_decimal_period = (
+            len(cur_text) >= 2
+            and cur_text[-1] == "."
+            and cur_text[-2].isdigit()
+        )
+        if (cur_text and nxt_text
+                and is_decimal_period
+                and nxt_text[0].isdigit()):
+            merged[i] = {
+                "text": cur_text + nxt_text,
+                "start": cur_s.get("start", 0.0),
+                "end": nxt_s.get("end", 0.0),
+                "word_indices": list(cur_s.get("word_indices", []))
+                + list(nxt_s.get("word_indices", [])),
+            }
+            del merged[i + 1]
+            continue
+        i += 1
+    return merged
+
+
 def _stable_ts_words_to_tts_subs(result) -> list[dict]:
     """Convert a stable_whisper.WhisperResult into the same dict schema
     as voice.subtitle.json (list of segments with timestamped_words).
@@ -154,6 +225,11 @@ def _build_alignment_from_subs(script: str, subs: list[dict], model_tag: str) ->
             "end": cur[-1]["end"],
             "word_indices": list(range(next_idx, next_idx + len(cur))),
         })
+
+    # Post-process: merge any pair of adjacent sentences that are
+    # obviously two halves of the same decimal number (see
+    # _merge_decimal_split_sentences docstring for why this is needed).
+    sentences = _merge_decimal_split_sentences(sentences)
 
     voice_sec = char_entries[-1]["end"] if char_entries else 0.0
     return {
