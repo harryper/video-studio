@@ -1,18 +1,31 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""Extract visual search keywords from script chunks for Pexels image matching.
+"""Extract per-scene visual specs for image/video matching.
 
 The script daemon writes a Chinese narrative (e.g. "如果全世界人类都不吃脂肪
-会怎样？"); the render daemon needs short English Pexels search terms per
-scene. The naive heuristic of "first 4 CJK chars + theme" often matches badly
-("脂肪敌人" → drink photos because Pexels' Chinese index is sparse).
+会怎样？"); the render daemon needs a *semantic* description of what each
+scene should look like, so that Pexels image search and MiniMax image
+generation both end up with visuals that actually match the script.
 
-This module batches ALL chunks into ONE LLM call to extract 1-3 focused
-English visual keywords per chunk. Falls back to an empty list on any error;
-the caller should then fall back to the regex heuristic.
+Schema (one dict per chunk):
+    {
+      "subject":       str — concrete, photogenic subject ("ticking clock
+                       hand second-precision" — NOT "hook theory")
+      "shot":          str — camera angle / framing ("extreme close-up",
+                       "wide establishing shot")
+      "mood":          str — 1-3 adjectives ("urgent, focused")
+      "color_palette": str — primary + accent ("dark teal + neon red")
+      "avoid":         str — things to keep OUT of the visual ("people,
+                       faces, text, brand logos")
+    }
 
-Caches results in runs/<job_id>/keywords.json (per-script-hash) so reruns of
-the same script don't re-call the LLM.
+The LLM is asked for ALL chunks in ONE call (batched), with 2-3 worked
+examples that anchor it to "concrete, photogenic, English" output. Falls
+back to empty list (caller regex-heuristic) on any error.
+
+Caches results in runs/<job_id>/keywords.json (per-script-hash). Cache
+file is tagged with `schema_version: 2` so future format changes can
+gracefully invalidate old caches.
 """
 from __future__ import annotations
 
@@ -30,26 +43,55 @@ NODE = Path("/usr/bin/node")
 OPENCLAW = Path("/usr/lib/node_modules/openclaw/openclaw.mjs")
 RUNS_DIR = SKILL_DIR / "runs"
 
+SCHEMA_VERSION = 2
+
+# Field names we ask the LLM for. Kept in one place so the parser and
+# prompt can't drift apart.
+SPEC_FIELDS = ("subject", "shot", "mood", "color_palette", "avoid")
+
+
 SYSTEM_PROMPT = (
-    "You extract visual search keywords for a short-form video.\n"
+    "You extract structured visual specs for a short-form video.\n"
     "Given a theme and N numbered Chinese script chunks, return ONLY a JSON "
-    "array of length N, where each element is an array of 1-3 lowercase "
-    "English Pexels search terms (specific, visual, no abstract concepts).\n"
-    "Output: JSON only, no prose, no markdown fences.\n"
+    f"array of length N. Each element is an object with exactly these fields:\n"
+    f"  - subject:       concrete, photogenic English subject (1-5 words).\n"
+    f"                    e.g. 'ticking clock hand' NOT 'time' or 'hook theory'.\n"
+    f"                    If the chunk is abstract, name the visual metaphor:\n"
+    f"                    'rhythm' → 'metronome ticking'.\n"
+    f"  - shot:          camera framing in English (one of: 'extreme close-up',\n"
+    f"                    'close-up', 'medium shot', 'wide shot', 'overhead',\n"
+    f"                    'low angle', 'high angle', 'tracking shot', etc.).\n"
+    f"  - mood:          1-3 comma-separated English adjectives\n"
+    f"                    ('urgent, focused', 'calm, contemplative').\n"
+    f"  - color_palette: 1-2 English color names ('dark teal + neon red',\n"
+    f"                    'warm gold + black').\n"
+    f"  - avoid:         what should NOT appear ('people, faces, text, brand logos'\n"
+    f"                    or 'crowd, daylight' depending on what the chunk is about).\n"
+    f"Output: JSON only, no prose, no markdown fences. Keys must be exactly\n"
+    f"{', '.join(SPEC_FIELDS)} (snake_case).\n"
 )
 
 
-def build_keyword_prompt(theme: str, chunks: list[str]) -> str:
+def build_spec_prompt(theme: str, chunks: list[str]) -> str:
     parts = [
         f"主题: {theme}",
         "",
-        "为下列每条脚本片段输出 1-3 个英文 Pexels 搜索关键词（具体、可视、避免抽象词）。",
-        "每条输出一个 JSON 子数组，整体形成一个 JSON 数组。",
+        "为下列每条脚本片段输出 1 个 JSON 对象，整体形成一个 JSON 数组。",
+        "JSON 对象字段: subject / shot / mood / color_palette / avoid（英文）。",
         "",
         "示例:",
-        "  '大脑六成是脂肪' → ['human brain anatomy', 'DHA omega-3 molecule']",
-        "  '脂肪是荷尔蒙原料' → ['cholesterol molecule', 'endocrine glands']",
-        "  '三十岁的人骨头会像六十岁' → ['osteoporosis x-ray', 'elderly bone density']",
+        "  '大脑六成是脂肪' → "
+        '{"subject": "human brain cross-section", "shot": "close-up", '
+        '"mood": "clinical, focused", "color_palette": "pink + soft white", '
+        '"avoid": "people, faces, text"}',
+        "  '三十岁的人骨头会像六十岁' → "
+        '{"subject": "osteoporosis bone x-ray", "shot": "close-up", '
+        '"mood": "stark, concerning", "color_palette": "muted gray + dark blue", '
+        '"avoid": "people, faces, text"}',
+        "  '前 0.5 秒钩住你' → "
+        '{"subject": "stopwatch ticking hand", "shot": "extreme close-up", '
+        '"mood": "urgent, suspenseful", "color_palette": "black + neon red", '
+        '"avoid": "people, faces, text, brand logos"}',
         "",
         "脚本片段:",
     ]
@@ -57,28 +99,55 @@ def build_keyword_prompt(theme: str, chunks: list[str]) -> str:
         c_one_line = re.sub(r"\s+", " ", c).strip()[:80]
         parts.append(f"  [{i}] {c_one_line}")
     parts.append("")
-    parts.append("只输出 JSON 数组，例: [[\"k1\", \"k2\"], [\"k3\"], ...]")
+    parts.append(
+        "只输出 JSON 数组，例: [{\"subject\": \"...\", ...}, {\"subject\": \"...\", ...}]"
+    )
     return "\n".join(parts)
 
 
-def _parse_json_array(text: str) -> list[list[str]] | None:
-    """Extract a JSON array of arrays from LLM output, tolerating stray prose.
+# ── Parsing ───────────────────────────────────────────────────────────
 
+_VALID_SHOTS = {
+    "extreme close-up", "close-up", "medium shot", "wide shot",
+    "overhead", "low angle", "high angle", "tracking shot",
+    "over-the-shoulder", "portrait framing", "object still life",
+    "wide establishing shot", "cinematic vista",
+}
+
+
+def _coerce_spec(item: object) -> dict:
+    """Coerce a parsed JSON object into a valid spec dict. Missing fields
+    become empty strings (callers handle missing data gracefully)."""
+    if not isinstance(item, dict):
+        return {f: "" for f in SPEC_FIELDS}
+    out = {}
+    for f in SPEC_FIELDS:
+        v = item.get(f, "")
+        if not isinstance(v, str):
+            v = str(v) if v is not None else ""
+        out[f] = v.strip()
+    return out
+
+
+def _parse_spec_array(text: str) -> list[dict] | None:
+    """Extract a JSON array of objects from LLM output, tolerating stray prose.
+
+    Returns None if the text is empty or no array-of-objects is found.
     Handles:
-    1) Plain JSON: [["k1"], ["k2"]]
-    2) Wrapped JSON envelope (openclaw --json): {"text": "[[...]]", ...}
-    3) Mixed prose + JSON: "blah blah [["k1"]] blah"
+      1) Plain JSON: [{"subject":...}, ...]
+      2) Wrapped JSON envelope (openclaw --json): {"text": "[...]", ...}
+      3) Mixed prose + JSON: "blah blah [{...}] blah"
     """
     if not text:
         return None
 
-    def _try_parse(s):
+    def _try_parse(s: str) -> list[dict] | None:
         try:
             v = json.loads(s)
         except (json.JSONDecodeError, TypeError):
             return None
-        if isinstance(v, list) and all(isinstance(x, list) for x in v):
-            return [[str(item) for item in x] for x in v]
+        if isinstance(v, list) and all(isinstance(x, dict) for x in v):
+            return [_coerce_spec(x) for x in v]
         return None
 
     # 1) direct parse
@@ -86,19 +155,28 @@ def _parse_json_array(text: str) -> list[list[str]] | None:
     if out is not None:
         return out
 
-    # 2) try parsing whole text as JSON envelope (openclaw --json 输出)
+    # 2) parse whole text as JSON envelope and walk it
     try:
         d = json.loads(text)
     except json.JSONDecodeError:
         d = None
     if d is not None:
-        # 递归找第一个形如 [[...]] 的字段
         def _walk(obj, depth=0):
             if depth > 8:
                 return None
+            if isinstance(obj, list) and obj and isinstance(obj[0], dict):
+                # Only treat as a spec array if the dicts actually LOOK
+                # like specs (have at least one spec field). Otherwise
+                # this is a structural envelope (e.g. openclaw result
+                # payloads) and we should keep walking.
+                if any(isinstance(x, dict) and x.get("subject") for x in obj):
+                    return [_coerce_spec(x) for x in obj]
+                for x in obj:
+                    r = _walk(x, depth + 1)
+                    if r is not None:
+                        return r
+                return None
             if isinstance(obj, list):
-                if obj and isinstance(obj[0], list):
-                    return [[str(s) for s in x] for x in obj]
                 for x in obj:
                     r = _walk(x, depth + 1)
                     if r is not None:
@@ -115,18 +193,55 @@ def _parse_json_array(text: str) -> list[list[str]] | None:
         if out is not None:
             return out
 
-    # 3) 抓第一段 [[...]]（re.DOTALL 跨行）
-    m = re.search(r"\[\s*\[.*?\]\s*\]", text, re.DOTALL)
-    if m:
-        out = _try_parse(m.group(0))
+    # 3) find outermost [...] block via bracket-matching (regex with .*?
+    # stops at the first `}` which can be wrong when the array itself is
+    # nested inside an envelope like [{"text": "[{...}]"}]).
+    block = _find_outermost_array(text)
+    if block is not None:
+        out = _try_parse(block)
         if out is not None:
             return out
     return None
 
 
-def _call_llm(theme: str, chunks: list[str], session_key: str) -> list[list[str]] | None:
-    prompt = build_keyword_prompt(theme, chunks)
-    # openclaw agent 没有 --system 选项 — 把系统提示拼到 message 开头
+def _find_outermost_array(text: str) -> str | None:
+    """Return the substring of the first balanced [...] array in text, or None.
+
+    Bracket-counting avoids the regex .*? problem of stopping at the first
+    inner `}`. Returns the substring (including outer brackets) so the
+    caller can json.loads it.
+    """
+    start = text.find("[")
+    while start != -1:
+        depth = 0
+        in_str = False
+        escape = False
+        for i in range(start, len(text)):
+            c = text[i]
+            if escape:
+                escape = False
+                continue
+            if c == "\\" and in_str:
+                escape = True
+                continue
+            if c == '"':
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if c == "[":
+                depth += 1
+            elif c == "]":
+                depth -= 1
+                if depth == 0:
+                    return text[start:i + 1]
+        start = text.find("[", start + 1)
+    return None
+
+
+def _call_llm(theme: str, chunks: list[str], session_key: str) -> list[dict] | None:
+    prompt = build_spec_prompt(theme, chunks)
+    # openclaw agent has no --system flag — prepend system prompt to user message
     full_message = f"[系统指令]\n{SYSTEM_PROMPT}\n\n[用户]\n{prompt}"
     cmd = [
         str(NODE), str(OPENCLAW), "agent",
@@ -146,22 +261,24 @@ def _call_llm(theme: str, chunks: list[str], session_key: str) -> list[list[str]
         print(f"[extract_scene_keywords] LLM call failed: {e}", file=sys.stderr)
         return None
 
-    # openclaw --json may emit a JSON envelope; the model text is usually in
-    # stdout. Try to find the assistant text.
     out = (result.stdout or "") + "\n" + (result.stderr or "")
-    parsed = _parse_json_array(out)
+    # DEBUG: trace what the LLM actually returned
+    print(
+        f"[extract_scene_keywords] LLM raw stdout ({len(result.stdout or '')} chars): "
+        f"{(result.stdout or '')[:200]!r}",
+        file=sys.stderr,
+    )
+    parsed = _parse_spec_array(out)
     if parsed is None:
-        # Last resort: grep for any nested array in the output
-        m = re.search(r"(\[\s*\"[^\"]+\"[^]]*\])", out)
-        if m:
-            try:
-                v = json.loads(m.group(0))
-                if isinstance(v, list):
-                    return [v]
-            except json.JSONDecodeError:
-                pass
+        print(
+            f"[extract_scene_keywords] parser returned None. Combined tail (300 chars): "
+            f"{out[-300:]!r}",
+            file=sys.stderr,
+        )
     return parsed
 
+
+# ── Cache ─────────────────────────────────────────────────────────────
 
 def _script_hash(chunks: list[str], theme: str) -> str:
     h = hashlib.sha256()
@@ -172,46 +289,90 @@ def _script_hash(chunks: list[str], theme: str) -> str:
     return h.hexdigest()[:16]
 
 
-def extract_keywords(
-    job_id: str, theme: str, chunks: list[str], *, force_refresh: bool = False
-) -> list[list[str]]:
-    """Return a list of length len(chunks); each element is 1-3 English keywords.
+def _read_cache(cache_path: Path, script_h: str) -> list[dict] | None:
+    """Read cache, return list[dict] or None. Old schema (v1, list[list[str]])
+    is treated as a cache miss so the new code regenerates it."""
+    if not cache_path.exists():
+        return None
+    try:
+        cached = json.loads(cache_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if cached.get("schema_version") != SCHEMA_VERSION:
+        return None
+    if cached.get("script_hash") != script_h:
+        return None
+    visual_specs = cached.get("visual_specs")
+    if not isinstance(visual_specs, list):
+        return None
+    out = []
+    for item in visual_specs:
+        if isinstance(item, dict):
+            out.append(_coerce_spec(item))
+        else:
+            out.append({f: "" for f in SPEC_FIELDS})
+    return out
 
-    Returns empty inner list `[]` on failure (caller should fall back to
-    regex heuristic). Caches result in runs/<job_id>/keywords.json.
+
+def extract_visual_specs(
+    job_id: str, theme: str, chunks: list[str], *, force_refresh: bool = False
+) -> list[dict]:
+    """Return a list of length len(chunks); each element is a spec dict.
+
+    Returns a list of empty-field dicts on failure (caller should fall back
+    to the regex heuristic). Caches result in
+    runs/<job_id>/keywords.json (same path as v1; v2 adds schema_version).
     """
     if not chunks:
         return []
     run_dir = RUNS_DIR / job_id
     cache_path = run_dir / "keywords.json"
     script_h = _script_hash(chunks, theme)
-    if not force_refresh and cache_path.exists():
-        try:
-            cached = json.loads(cache_path.read_text(encoding="utf-8"))
-            if cached.get("script_hash") == script_h and cached.get("keywords"):
-                return cached["keywords"]
-        except (OSError, json.JSONDecodeError):
-            pass
 
-    # Try batched LLM call
-    session_key = f"agent:main:video-studio-kw-{job_id}"
+    if not force_refresh:
+        cached = _read_cache(cache_path, script_h)
+        if cached is not None and len(cached) == len(chunks):
+            return cached
+
+    # New session-key namespace so we don't pollute the v1 kw session and
+    # so a v2 answer can't be confused with a stale v1 one if the cache
+    # file gets corrupted.
+    session_key = f"agent:main:video-studio-vspec-{job_id}"
     result = _call_llm(theme, chunks, session_key)
-    if result is None or len(result) != len(chunks):
-        print(f"[extract_scene_keywords] LLM returned no result, using empty", file=sys.stderr)
-        result = [[] for _ in chunks]
 
-    # Pad to 3 elements each (caller uses [0] mainly)
-    normalized: list[list[str]] = []
-    for kws in result:
-        clean = [str(k).strip().lower() for k in (kws or []) if str(k).strip()]
-        normalized.append(clean[:3] if clean else [])
+    # Re-align LLM output with the original chunks list. The LLM naturally
+    # drops trailing empty (pad) chunks ("[11] " / blank line), so it
+    # returns N_real specs where len(chunks) = N_real + N_pad. We map them
+    # back positionally: real (non-empty) chunks get their spec; pad chunks
+    # stay empty. If the LLM returns the wrong count for *real* chunks we
+    # treat it as a parse failure and fall back to all-empty.
+    non_empty_indices = [i for i, c in enumerate(chunks) if c.strip()]
+    n_real = len(non_empty_indices)
+    n_pad = len(chunks) - n_real
 
-    # Persist cache
+    if result is None or len(result) != n_real:
+        if result is not None and len(result) != n_real:
+            print(
+                f"[extract_scene_keywords] LLM returned {len(result)} specs but "
+                f"{n_real} non-empty chunks; using empty specs",
+                file=sys.stderr,
+            )
+        normalized = [{f: "" for f in SPEC_FIELDS} for _ in chunks]
+    else:
+        normalized = [{f: "" for f in SPEC_FIELDS} for _ in chunks]
+        for idx, spec in zip(non_empty_indices, result):
+            normalized[idx] = _coerce_spec(spec)
+
     try:
         run_dir.mkdir(parents=True, exist_ok=True)
         cache_path.write_text(
             json.dumps(
-                {"script_hash": script_h, "theme": theme, "keywords": normalized},
+                {
+                    "schema_version": SCHEMA_VERSION,
+                    "script_hash": script_h,
+                    "theme": theme,
+                    "visual_specs": normalized,
+                },
                 ensure_ascii=False, indent=2,
             ),
             encoding="utf-8",
@@ -221,10 +382,20 @@ def extract_keywords(
     return normalized
 
 
+# Backwards-compatible alias. The render daemon imports `extract_keywords`;
+# the function returns list[dict] now (was list[list[str]]). All v2 callers
+# have been updated to use the new dict shape.
+def extract_keywords(*args, **kwargs):
+    return extract_visual_specs(*args, **kwargs)
+
+
 # ── CLI for debugging ─────────────────────────────────────────────────
 def _main() -> int:
     if len(sys.argv) < 3:
-        print("usage: extract_scene_keywords.py <job_id> <script_file> [--theme <t>]", file=sys.stderr)
+        print(
+            "usage: extract_scene_keywords.py <job_id> <script_file> [--theme <t>]",
+            file=sys.stderr,
+        )
         return 2
     job_id = sys.argv[1]
     script_path = Path(sys.argv[2])
@@ -238,7 +409,7 @@ def _main() -> int:
     chunks = re.split(r"(?<=[。！？!?\.])\s+", script)
     chunks = [c.strip() for c in chunks if c.strip()]
     print(f"=== {len(chunks)} chunks for job {job_id} (theme={theme}) ===", file=sys.stderr)
-    result = extract_keywords(job_id, theme, chunks)
+    result = extract_visual_specs(job_id, theme, chunks)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 

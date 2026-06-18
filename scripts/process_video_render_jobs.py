@@ -209,11 +209,17 @@ def render_placeholder(
     except Exception:
         job_seed = 0
     for i, chunk in enumerate(chunks):
-        # 优先用 LLM 关键词；空时回落到正则启发式
-        kws = keywords_per_scene[i] if i < len(keywords_per_scene) else []
-        if kws:
-            # 多关键词中选第一个最具体的；offset 让每个场景拿不同结果
-            base_query = kws[0]
+        # 优先用 LLM visual spec；spec 缺失时回落到正则启发式
+        spec = keywords_per_scene[i] if i < len(keywords_per_scene) else {}
+        if spec and spec.get("subject"):
+            # spec 驱动：subject 是英文具体可拍物体；shot 作为 Pexels 的
+            # 取景修饰。两者一起喂 Pexels,比旧的"中文前 4 字 + close-up"
+            # 命中率高很多(Pexels 是英文索引,按 tag 匹配)。
+            shot_word = (spec.get("shot") or "").strip().split()[0] if spec.get("shot") else ""
+            parts = [spec["subject"]]
+            if shot_word:
+                parts.append(shot_word)
+            base_query = " ".join(parts)[:60]
         else:
             base_query = extract_pexels_query(chunk, theme, i)
         offset = (i * 3 + job_seed) % 5
@@ -237,8 +243,8 @@ def render_placeholder(
             log(f"  scene {i+1}: pexels (q={base_query!r}, offset={offset})")
             media_items.append(("image", img_path))
             continue
-        # 1b. LLM 抽不到结果时，再试 chunk 原文本（中文 Pexels 兜底）
-        if kws:
+        # 1b. spec 缺失时，再试 chunk 原文本（中文 Pexels 兜底）
+        if not (spec and spec.get("subject")):
             fallback_q = extract_pexels_query(chunk, theme, i)
             if try_pexels_image(fallback_q, img_path, width=width, height=height, offset=offset):
                 log(f"  scene {i+1}: pexels fallback (q={fallback_q!r})")
@@ -246,7 +252,7 @@ def render_placeholder(
                 continue
         # 2. Fall back to MiniMax
         log(f"  scene {i+1}: pexels miss, trying MiniMax...")
-        prompt = build_visual_prompt(chunk, theme, scene_index=i, total=len(chunks))
+        prompt = build_visual_prompt(chunk, theme, scene_index=i, total=len(chunks), spec=spec)
         if try_minimax_image(prompt, img_path, width=width, height=height):
             log(f"  scene {i+1}: minimax")
             media_items.append(("image", img_path))
@@ -422,12 +428,15 @@ def extract_pexels_query(chunk_text, theme, scene_index):
     return hint
 
 
-def build_visual_prompt(chunk_text, theme, scene_index, total):
+def build_visual_prompt(chunk_text, theme, scene_index, total, spec=None):
     """Build a visual prompt for MiniMax image generation.
 
-    Strategy: use theme as global style anchor, chunk as scene subject.
-    Add per-scene visual variation (wide / close-up / object / person)
-    so consecutive scenes don't look identical.
+    When `spec` is provided (from extract_scene_visual_specs), it drives
+    subject / shot / mood / color_palette / avoid. Otherwise we fall
+    back to a chunk-text + theme + rotating-shot heuristic.
+
+    MiniMax image-01 supports English and Chinese in the same prompt;
+    structured English is more reliable for camera/mood vocabulary.
     """
     # Style: cinematic 抖音-quality, vertical
     style = (
@@ -436,28 +445,36 @@ def build_visual_prompt(chunk_text, theme, scene_index, total):
         "35mm film grain, 9:16 vertical composition"
     )
 
-    # Per-scene shot variation
-    shot_variations = [
-        "wide establishing shot",
-        "medium shot with context",
-        "close-up detail shot",
-        "extreme close-up texture",
-        "wide shot from a different angle",
-        "over-the-shoulder perspective",
-        "low angle dramatic shot",
-        "portrait framing centered",
-        "object still life composition",
-        "wide cinematic vista",
-    ]
-    shot = shot_variations[scene_index % len(shot_variations)]
+    if spec and spec.get("subject"):
+        # Spec-driven: build prompt from the 5-field structured spec.
+        shot = spec.get("shot") or "medium shot"
+        subject = spec["subject"]
+        mood = spec.get("mood") or ""
+        palette = spec.get("color_palette") or ""
+        avoid = spec.get("avoid") or ""
+        prompt = f"{shot}, {subject}, {mood}, {palette}, {style}"
+        if avoid:
+            prompt = f"{prompt}, avoid: {avoid}"
+    else:
+        # Fallback: rotating shot + chunk text (legacy v1 path).
+        shot_variations = [
+            "wide establishing shot",
+            "medium shot with context",
+            "close-up detail shot",
+            "extreme close-up texture",
+            "wide shot from a different angle",
+            "over-the-shoulder perspective",
+            "low angle dramatic shot",
+            "portrait framing centered",
+            "object still life composition",
+            "wide cinematic vista",
+        ]
+        shot = shot_variations[scene_index % len(shot_variations)]
+        subject = chunk_text.strip()[:60].rstrip("。，！？,.!? ")
+        if not subject:
+            subject = theme[:30] if theme else "atmospheric scene"
+        prompt = f"{shot}, {subject}, {style}"
 
-    # Clean up chunk for prompt use
-    subject = chunk_text.strip()[:60].rstrip("。，！？,.!? ")
-    if not subject:
-        subject = theme[:30] if theme else "atmospheric scene"
-
-    # Translate/keep chinese: MiniMax image gen supports mixed
-    prompt = f"{shot}, {subject}, {style}"
     # Cap prompt length (API limit ~2000 chars)
     if len(prompt) > 500:
         prompt = prompt[:500]
@@ -544,7 +561,13 @@ def _load_alignment_scene_times(job_id, chunks, total_duration):
     sent_norm = [_norm(s) for s in sent_clean]
     for chunk in chunks:
         if not chunk:
-            scene_times.append((0.0, 0.0))
+            # Pad scene (split_script_to_cards fills the tail with "" when
+            # n_scenes > n_sentences). Mark as None so build_image_composition_html
+            # can slot it at the previous cursor and emit a zero-length
+            # clip — (0.0, 0.0) here would later become a `starts` entry
+            # that resets the cumulative timeline to zero, turning all
+            # intervening per_this values negative.
+            scene_times.append(None)
             continue
         chunk_norm = _norm(chunk)
         # Find the first sentence (≥cursor) whose normalized text overlaps
@@ -569,13 +592,19 @@ def _load_alignment_scene_times(job_id, chunks, total_duration):
             scene_times.append(None)
         else:
             scene_times.append((first, last))
-    # If any chunk missed, drop back to equal-time for everything (cleaner
-    # than mixing).
-    if any(t is None for t in scene_times):
+    # If any non-empty chunk missed, drop back to equal-time for everything
+    # (cleaner than mixing). Pad chunks (None from the empty-chunk branch
+    # above) are allowed — they get a zero-length slot in the timeline.
+    real_chunks_missed = [
+        i for i, (c, t) in enumerate(zip(chunks, scene_times)) if c and t is None
+    ]
+    if real_chunks_missed:
         return []
-    # Clamp: last scene must end exactly at total_duration so the video
-    # doesn't run short.
-    if scene_times:
+    # Clamp: last real scene must end exactly at total_duration so the
+    # video doesn't run short. (If the last chunk is a pad from
+    # split_script_to_cards trailing empty chunks, scene_times[-1] is
+    # None and we leave the cursor to handle it downstream.)
+    if scene_times and scene_times[-1] is not None:
         scene_times[-1] = (scene_times[-1][0], float(total_duration))
     return scene_times
 
@@ -768,9 +797,15 @@ def _load_alignment_subtimes(job_id, scene_times, chunks, width=DEFAULT_WIDTH, h
         char_entries = []
 
     out: list[list[tuple[list[str], float, float]]] = []
-    for (scene_start, scene_end), chunk in zip(scene_times, chunks):
+    for scene_span, chunk in zip(scene_times, chunks):
+        if scene_span is None or not chunk:
+            # Pad scene (split_script_to_cards trailing "" when
+            # n_scenes > n_sentences) or empty chunk — no subs.
+            out.append([])
+            continue
+        scene_start, scene_end = scene_span
         scene_dur = scene_end - scene_start
-        if scene_dur <= 0 or not chunk:
+        if scene_dur <= 0:
             out.append([])
             continue
         # Include any sentence that overlaps with the scene, not just
@@ -1332,10 +1367,25 @@ def build_image_composition_html(
     - Subtitle: large text at bottom with dark gradient overlay
     """
     n = len(media_items)
-    if scene_times and len(scene_times) == n:
+    if scene_times and len(scene_times) == n and any(t is not None for t in scene_times):
         # Alignment-driven: each scene uses the TTS span of its text.
-        starts = [round(scene_times[i][0], 3) for i in range(n)]
-        starts.append(round(scene_times[-1][1], 3))  # final stop
+        # Pad scenes (None — from split_script_to_cards trailing "" chunks
+        # when n_scenes > n_sentences) inherit the previous cursor so the
+        # timeline stays monotonic. They render as zero-length clips with
+        # no media / no subs, which is the correct visual for a blank
+        # scene. Using `scene_times[-1][1]` as the final stop ignores
+        # trailing None pads (their end is unknown), so we track our own
+        # cursor.
+        starts = []
+        cursor = 0.0
+        for t in scene_times:
+            if t is None:
+                starts.append(round(cursor, 3))
+            else:
+                s, e = t
+                starts.append(round(s, 3))
+                cursor = e
+        starts.append(round(cursor, 3))  # final stop
     else:
         per = total_duration / n
         # hyperframes lint 抓相邻 clip 在 1e-14s 处的浮点尾数重叠。
@@ -1357,6 +1407,14 @@ def build_image_composition_html(
     stage_media_html = []
     timeline_tweens = []
     for i, ((media_kind, media_path), chunk) in enumerate(zip(media_items, chunks)):
+        # Pad scene (empty chunk from split_script_to_cards trailing ""):
+        # skip — emitting it would either stack 11 zero-length clips at the
+        # same data-start (overlapping_clips_same_track lint error) or
+        # extend the timeline past the last real scene. Both are wrong:
+        # pad chunks carry no text / no media, so they should not appear
+        # in the rendered composition at all.
+        if not chunk:
+            continue
         start = starts[i]
         per_this = starts[i + 1] - starts[i]
         kb = kb_variants[i % len(kb_variants)]
