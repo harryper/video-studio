@@ -750,7 +750,10 @@ def process_one(job):
         # converge on the real cadence instead of guessing.
         char_count = len(job.get("script", "") or "")
         if char_count > 0 and voice_duration > 0:
-            job.setdefault("script_meta", {})
+            # setdefault doesn't replace an existing None value, so guard
+            # explicitly — fresh jobs have script_meta: null.
+            if not isinstance(job.get("script_meta"), dict):
+                job["script_meta"] = {}
             job["script_meta"]["actual_seconds"] = round(voice_duration, 2)
             job["script_meta"]["actual_rate"] = round(voice_duration / char_count, 3)
             log(f"  actual_rate={voice_duration / char_count:.3f} chars/sec (n={char_count})")
