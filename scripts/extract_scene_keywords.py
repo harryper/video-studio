@@ -52,8 +52,9 @@ SPEC_FIELDS = ("subject", "shot", "mood", "color_palette", "avoid")
 
 SYSTEM_PROMPT = (
     "You extract structured visual specs for a short-form video.\n"
-    "Given a theme and N numbered Chinese script chunks, return ONLY a JSON "
-    f"array of length N. Each element is an object with exactly these fields:\n"
+    "Given a theme and N numbered Chinese script chunks (empty/blank chunks "
+    "have already been filtered out), return ONLY a JSON array of length N. "
+    "Each element is an object with exactly these fields:\n"
     f"  - subject:       concrete, photogenic English subject (1-5 words).\n"
     f"                    e.g. 'ticking clock hand' NOT 'time' or 'hook theory'.\n"
     f"                    If the chunk is abstract, name the visual metaphor:\n"
@@ -80,10 +81,18 @@ SYSTEM_PROMPT = (
 
 
 def build_spec_prompt(theme: str, chunks: list[str]) -> str:
+    # Pre-strip empty chunks: we only ask the LLM for specs of NON-empty
+    # chunks (we'll realign to the original positions downstream). Empty
+    # chunks (pad scenes) don't need a spec — the renderer uses a gradient
+    # for those. Asking for N_chunks specs wastes tokens and frequently
+    # pushes the model past its generation limit, producing truncated
+    # JSON that's hard to parse reliably.
+    non_empty_chunks = [c for c in chunks if c.strip()]
     parts = [
         f"主题: {theme}",
         "",
-        "为下列每条脚本片段输出 1 个 JSON 对象，整体形成一个 JSON 数组。",
+        f"为下列每条非空脚本片段输出 1 个 JSON 对象（{len(non_empty_chunks)} 个对象）"
+        "，整体形成一个 JSON 数组。空/纯空白片段无需处理，已自动剔除。",
         "JSON 对象字段: subject / shot / mood / color_palette / avoid（英文）。",
         "",
         "示例:",
@@ -100,9 +109,9 @@ def build_spec_prompt(theme: str, chunks: list[str]) -> str:
         '"mood": "urgent, suspenseful", "color_palette": "black + neon red", '
         '"avoid": "people, faces, human hands, skin, text, brand logos, watermarks"}',
         "",
-        "脚本片段:",
+        "脚本片段（按出现顺序）:",
     ]
-    for i, c in enumerate(chunks, 1):
+    for i, c in enumerate(non_empty_chunks, 1):
         c_one_line = re.sub(r"\s+", " ", c).strip()[:80]
         parts.append(f"  [{i}] {c_one_line}")
     parts.append("")
@@ -144,6 +153,8 @@ def _parse_spec_array(text: str) -> list[dict] | None:
       1) Plain JSON: [{"subject":...}, ...]
       2) Wrapped JSON envelope (openclaw --json): {"text": "[...]", ...}
       3) Mixed prose + JSON: "blah blah [{...}] blah"
+      4) Truncated JSON array (LLM hit token limit): "[{...}, {..." — we
+         close the open brackets and parse.
     """
     if not text:
         return None
@@ -194,7 +205,16 @@ def _parse_spec_array(text: str) -> list[dict] | None:
                     if r is not None:
                         return r
             elif isinstance(obj, str):
-                return _try_parse(obj)
+                # Try normal parse first; if that fails, try recovery
+                # (LLM truncated the JSON array inside this string).
+                out = _try_parse(obj)
+                if out is not None:
+                    return out
+                recovered = _recover_truncated_array(obj)
+                if recovered is not None:
+                    out = _try_parse(recovered)
+                    if out is not None:
+                        return out
             return None
         out = _walk(d)
         if out is not None:
@@ -203,12 +223,89 @@ def _parse_spec_array(text: str) -> list[dict] | None:
     # 3) find outermost [...] block via bracket-matching (regex with .*?
     # stops at the first `}` which can be wrong when the array itself is
     # nested inside an envelope like [{"text": "[{...}]"}]).
+    # Only accept it if the captured block actually LOOKS like a spec
+    # array (each dict has at least one spec field). Otherwise we caught
+    # an outer envelope array (e.g. openclaw `payloads`) — fall through
+    # to recovery below.
     block = _find_outermost_array(text)
     if block is not None:
         out = _try_parse(block)
-        if out is not None:
+        if out is not None and any(
+            isinstance(x, dict) and any(k in SPEC_FIELDS for k in x)
+            for x in out
+        ):
+            return out
+
+    # 4) Recover from a truncated JSON array (LLM hit output token limit
+    # and dropped the closing `]`). The text typically ends mid-spec like
+    # `[{"subject": "x", ...}, {"subject": "y", "sh...`. We find the
+    # open `[`, walk forward, and close any open braces/brackets we find.
+    recovered = _recover_truncated_array(text)
+    if recovered is not None:
+        out = _try_parse(recovered)
+        if out is not None and any(
+            isinstance(x, dict) and any(k in SPEC_FIELDS for k in x)
+            for x in out
+        ):
             return out
     return None
+
+
+def _recover_truncated_array(text: str) -> str | None:
+    """If `text` starts a JSON array but never closes it (LLM truncation),
+    return the text with the necessary `}` and `]` appended to make it
+    valid JSON. Returns None if no `[` is found.
+
+    We only recover if at least one complete dict element was parsed
+    (otherwise there's nothing to recover). Strategy:
+      1. Find the first `[` (skipping prose).
+      2. Walk character-by-character tracking open braces / strings.
+      3. At end, append any missing `}` then `]` to close.
+      4. If we're mid-spec (depth_obj > 0 and we're inside an object
+         that's not yet closed), truncate back to the last `,` so we
+         don't emit a half-built field. Also handle mid-string
+         truncation by trimming back to the previous key-value boundary.
+    """
+    start = text.find("[")
+    if start == -1:
+        return None
+    depth_obj = 0   # { ... }
+    depth_arr = 0   # [ ... ]
+    in_str = False
+    escape = False
+    last_complete_spec_end = -1   # index right after a closing `}`
+    for i in range(start, len(text)):
+        c = text[i]
+        if escape:
+            escape = False
+            continue
+        if c == "\\" and in_str:
+            escape = True
+            continue
+        if c == '"':
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if c == "{":
+            depth_obj += 1
+        elif c == "}":
+            depth_obj -= 1
+            if depth_obj == 0:
+                last_complete_spec_end = i + 1
+        elif c == "[":
+            depth_arr += 1
+        elif c == "]":
+            depth_arr -= 1
+
+    if depth_arr <= 0 and depth_obj <= 0:
+        return None  # already balanced; shouldn't reach here
+
+    if last_complete_spec_end == -1:
+        return None  # nothing complete to recover
+
+    # Truncate text to the last complete spec, then append `]` to close array.
+    return text[:last_complete_spec_end] + "]"
 
 
 def _find_outermost_array(text: str) -> str | None:
@@ -357,6 +454,34 @@ def extract_visual_specs(
     # Anything else is treated as a parse failure.
     non_empty_indices = [i for i, c in enumerate(chunks) if c.strip()]
     n_real = len(non_empty_indices)
+
+    def _fits(r):
+        return r is not None and len(r) in (n_real, len(chunks))
+
+    # The LLM intermittently returns a wrong-length list (we've seen 1-spec
+    # responses when the right answer is 4). Manual _call_llm tests show
+    # the model itself works fine — it's a transient alignment issue
+    # (probably partial completion / mid-stream truncation). One retry
+    # almost always clears it; further retries are wasteful.
+    if not _fits(result):
+        print(
+            f"[extract_scene_keywords] LLM returned {len(result) if result else 0} specs "
+            f"(expected {n_real} non-empty or {len(chunks)} total); retrying once",
+            file=sys.stderr,
+        )
+        result_retry = _call_llm(theme, chunks, session_key + "-retry")
+        if _fits(result_retry):
+            print(
+                f"[extract_scene_keywords] retry OK: got {len(result_retry)} specs",
+                file=sys.stderr,
+            )
+            result = result_retry
+        else:
+            print(
+                f"[extract_scene_keywords] retry also failed "
+                f"(got {len(result_retry) if result_retry else 0}); using empty specs",
+                file=sys.stderr,
+            )
 
     if result is None:
         normalized = [{f: "" for f in SPEC_FIELDS} for _ in chunks]

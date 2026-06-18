@@ -411,6 +411,98 @@ def test_llm_returns_full_length():
         shutil.rmtree(run_dir, ignore_errors=True)
 
 
+def test_llm_intermittent_wrong_count_retries():
+    """If the first LLM call returns a wrong-length list (e.g. 1 spec when
+    we expected 4), retry once. Manual tests showed the LLM works fine in
+    isolation — the wrong-length case is intermittent, so a single retry
+    almost always clears it."""
+    job_id = "test_retry_wrong_count"
+    run_dir = Path(tempfile.mkdtemp(prefix="vspec_retry_"))
+    try:
+        ek.RUNS_DIR.mkdir(exist_ok=True)
+        link = ek.RUNS_DIR / job_id
+        if link.exists() or link.is_symlink():
+            link.unlink()
+        link.symlink_to(run_dir)
+        try:
+            chunks = ["a", "b", "c", "d"]  # 4 real chunks, n_real = 4
+            theme = "test"
+            calls = {"count": 0}
+
+            def fake_call(theme_arg, chunks_arg, session_key):
+                calls["count"] += 1
+                if calls["count"] == 1:
+                    # First call returns 1 spec (intermittent bad case)
+                    return [{"subject": "garbage"}]
+                # Second call (retry) returns full 4 specs
+                return [
+                    {"subject": f"real_{i}", "shot": "", "mood": "",
+                     "color_palette": "", "avoid": ""}
+                    for i in range(4)
+                ]
+
+            orig = ek._call_llm
+            ek._call_llm = fake_call
+            try:
+                specs = ek.extract_visual_specs(job_id, theme, chunks)
+            finally:
+                ek._call_llm = orig
+
+            assert calls["count"] == 2, f"expected 2 calls, got {calls['count']}"
+            assert len(specs) == 4
+            for i in range(4):
+                assert specs[i]["subject"] == f"real_{i}", (
+                    f"spec {i} expected real_{i}, got {specs[i]['subject']!r}"
+                )
+        finally:
+            if link.exists() or link.is_symlink():
+                link.unlink()
+    finally:
+        shutil.rmtree(run_dir, ignore_errors=True)
+
+
+def test_recover_truncated_json_array():
+    """The LLM sometimes hits its output token limit and produces a JSON
+    array that's missing the closing `]`. Recovery should truncate back
+    to the last complete spec and append the closing bracket, returning
+    the partial-but-valid specs instead of None."""
+    # Case 1: closing `]` missing entirely (the v_5dec0abc failure mode)
+    raw = '[{"subject": "a", "shot": "x"}, {"subject": "b", "shot": "y"}'
+    out = ek._parse_spec_array(raw)
+    assert out is not None, "truncated array should recover, not return None"
+    assert len(out) == 2, f"expected 2 recovered specs, got {len(out)}"
+    assert out[0]["subject"] == "a"
+    assert out[1]["subject"] == "b"
+
+    # Case 2: mid-spec truncation — partial field. Should recover the
+    # first complete spec and discard the partial one.
+    raw = '[{"subject": "a", "shot": "x"}, {"subject": "b", "sho'
+    out = ek._parse_spec_array(raw)
+    assert out is not None
+    assert len(out) == 1, f"expected 1 recovered spec, got {len(out)}"
+    assert out[0]["subject"] == "a"
+
+    # Case 3: truncated text inside an openclaw envelope — the actual
+    # daemon failure mode. The outer envelope has payloads[0].text with
+    # a truncated inner JSON. Without recovery the outer `[{"text": ...}]`
+    # array gets mis-identified as a spec array.
+    truncated_text = (
+        '[{"subject": "thumb scrolling phone screen", "shot": "close-up", '
+        '"mood": "restless", "color_palette": "dark + blue", "avoid": "text"}, '
+        '{"subject": "stopwatch second hand", "shot": "extreme close-up", '
+        '"mood": "urgent", "color_palette": "black + red", "avoid": "text"}'
+    )  # missing closing `]`
+    envelope = json.dumps({
+        "runId": "x",
+        "result": {"payloads": [{"text": truncated_text}]}
+    })
+    out = ek._parse_spec_array(envelope)
+    assert out is not None, "envelope-wrapped truncated text should recover"
+    assert len(out) == 2, f"expected 2 recovered specs, got {len(out)}"
+    assert out[0]["subject"] == "thumb scrolling phone screen"
+    assert out[1]["subject"] == "stopwatch second hand"
+
+
 # ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -430,6 +522,8 @@ def main():
         test_real_chunks_aligned_when_pad_trailing,
         test_wrong_count_falls_back_to_all_empty,
         test_llm_returns_full_length,
+        test_llm_intermittent_wrong_count_retries,
+        test_recover_truncated_json_array,
         test_system_prompt_guides_comprehensive_avoid,
     ]
     passed = 0
