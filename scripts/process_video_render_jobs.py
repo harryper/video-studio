@@ -1156,10 +1156,14 @@ def _kinetic_base_css(scene_id: str) -> str:
     """
 
 
-def build_kinetic_text_scene_html(text: str, scene_index: int, width: int, height: int) -> str:
-    """纯文字 kinetic 场景 — 大白字逐词淡入，无背景图。
+def build_kinetic_text_scene_html(
+    text: str, scene_index: int, width: int, height: int, overlay: bool = False
+) -> str:
+    """纯文字 kinetic 场景 — 大白字逐词淡入。
 
-    用于短句（< 20 字）、钩子副标题、抽象概念陈述。
+    overlay=False (默认): 无背景图，自带渐变背景(老行为)。
+    overlay=True: 作为 Pexels 图/视频上的前景层，透明 + 底部深色 scrim
+    (.kinetic-overlay class) 提高文字可读性。
     """
     scene_id = f"kinetic-txt-{scene_index}"
     top, bottom = _palette_for(scene_index)
@@ -1172,9 +1176,16 @@ def build_kinetic_text_scene_html(text: str, scene_index: int, width: int, heigh
         f"--k-counter-fs:{_COUNTER_FS(width, height)}px;"
         f"--k-unit-fs:{_UNIT_FS(width, height)}px;"
     )
+    if overlay:
+        # 透明背景 + 底部 scrim class，由 build_image_composition_html 同级 CSS 提供
+        bg_style = "background: transparent;"
+        classes = "kinetic kinetic-text kinetic-overlay"
+    else:
+        bg_style = f"background: linear-gradient(135deg, {top} 0%, {bottom} 100%);"
+        classes = "kinetic kinetic-text"
     return f"""
-    <div class="kinetic kinetic-text" id="{scene_id}" style="
-      background: linear-gradient(135deg, {top} 0%, {bottom} 100%);
+    <div class="{classes}" id="{scene_id}" style="
+      {bg_style}
       {css_vars}
     ">
       <style>{_kinetic_base_css(scene_id)}</style>
@@ -1193,9 +1204,13 @@ def build_kinetic_text_scene_html(text: str, scene_index: int, width: int, heigh
 
 
 def build_animated_counter_scene_html(
-    label: str, value: int, unit: str, scene_index: int, width: int, height: int
+    label: str, value: int, unit: str, scene_index: int, width: int, height: int,
+    overlay: bool = False,
 ) -> str:
-    """动画数字场景 — GSAP 从 0 滚到 value，用于"人脑六成是脂肪"之类。"""
+    """动画数字场景 — GSAP 从 0 滚到 value，用于"人脑六成是脂肪"之类。
+
+    overlay=True: 透明背景 + 底部 scrim (作为 Pexels 图/视频的前景 overlay)。
+    """
     scene_id = f"kinetic-num-{scene_index}"
     top, bottom = _palette_for(scene_index + 3)  # 偏移避免和 text 撞色
     css_vars = (
@@ -1204,9 +1219,15 @@ def build_animated_counter_scene_html(
         f"--k-counter-fs:{_COUNTER_FS(width, height)}px;"
         f"--k-unit-fs:{_UNIT_FS(width, height)}px;"
     )
+    if overlay:
+        bg_style = "background: transparent;"
+        classes = "kinetic kinetic-counter kinetic-overlay"
+    else:
+        bg_style = f"background: linear-gradient(135deg, {top} 0%, {bottom} 100%);"
+        classes = "kinetic kinetic-counter"
     return f"""
-    <div class="kinetic kinetic-counter" id="{scene_id}" style="
-      background: linear-gradient(135deg, {top} 0%, {bottom} 100%);
+    <div class="{classes}" id="{scene_id}" style="
+      {bg_style}
       {css_vars}
     ">
       <style>{_kinetic_base_css(scene_id)}</style>
@@ -1357,16 +1378,33 @@ def decide_scene_type(chunk: str, scene_index: int) -> str:
     return "stock"
 
 
-def _enrich_with_kinetic(media_items, chunks, width, height):
-    """把 ~30% 的"含数字/短句"场景替换为 kinetic HTML 注入。
+def _enrich_with_kinetic(media_items, chunks, width, height, apply_overlay=False):
+    """对每个 scene 跑 `decide_scene_type` 分类 + 注入可选的 kinetic overlay。
 
-    返回新的 media_items 列表（kinetic 类型用 ("kinetic", html_str) 元组）。
+    apply_overlay=False (默认, 2026-06-18 用户反馈后):
+      Pexels 图/视频太干净了,不要再叠大字/数字。函数仅做分类 + 日志,
+      直接返回原 media_items。底部 sub-caption 仍然跟着 TTS 显示。
+
+    apply_overlay=True (历史行为, 留着方便未来重开):
+      把 ~30% 的"含数字/短句"场景叠加 kinetic overlay 而不是替换。
+      返回的 media_items 形状:
+        - ("image_overlay", (image_path, kinetic_html)) — Pexels 图 + kinetic overlay
+        - ("video_overlay", (video_path, kinetic_html)) — Pexels 视频 + kinetic overlay
+        - ("kinetic", html_str) — 无 stock 时纯 kinetic (gradient 背景)
+        - ("image", path) / ("video", path) — 不触发 kinetic 时保留 stock
+        - ("gradient", path) — pad/fallback gradient
     """
     n = len(media_items)
     out = []
     kinetic_count = 0
     for i, ((kind, path), chunk) in enumerate(zip(media_items, chunks)):
         scene_type = decide_scene_type(chunk, i)
+        if not apply_overlay:
+            # 仅分类 + 日志,不动 media_items
+            if scene_type != "stock":
+                kinetic_count += 1
+            out.append((kind, path))
+            continue
         if scene_type == "counter":
             extracted = _extract_counter_value(chunk) or (0, "")
             value, unit = extracted
@@ -1382,22 +1420,39 @@ def _enrich_with_kinetic(media_items, chunks, width, height):
             )
             label = re.sub(r"[，。！？.!?]+$", "", label).strip()[:24] or "数据"
             html_str = build_animated_counter_scene_html(
-                label, value, unit, i, width, height
+                label, value, unit, i, width, height, overlay=(kind in ("image", "video"))
             )
-            out.append(("kinetic", html_str))
-            kinetic_count += 1
+            if kind == "image":
+                out.append(("image_overlay", (path, html_str)))
+                kinetic_count += 1
+            elif kind == "video":
+                out.append(("video_overlay", (path, html_str)))
+                kinetic_count += 1
+            else:
+                # No stock media (gradient/pad fallback) — keep pure kinetic
+                out.append(("kinetic", html_str))
+                kinetic_count += 1
         elif scene_type == "kinetic":
             short = re.sub(r"\s+", " ", chunk).strip()
             if len(short) > 24:
                 short = short[:24] + "…"
-            html_str = build_kinetic_text_scene_html(short, i, width, height)
-            out.append(("kinetic", html_str))
-            kinetic_count += 1
+            html_str = build_kinetic_text_scene_html(
+                short, i, width, height, overlay=(kind in ("image", "video"))
+            )
+            if kind == "image":
+                out.append(("image_overlay", (path, html_str)))
+                kinetic_count += 1
+            elif kind == "video":
+                out.append(("video_overlay", (path, html_str)))
+                kinetic_count += 1
+            else:
+                out.append(("kinetic", html_str))
+                kinetic_count += 1
         else:
             out.append((kind, path))
     log(
         f"  scene type mix: {kinetic_count}/{n} kinetic "
-        f"({100*kinetic_count//max(n,1)}% — target ~30%)"
+        f"({100*kinetic_count//max(n,1)}% — target ~30%, overlay={'on' if apply_overlay else 'off'})"
     )
     return out
 
@@ -1514,6 +1569,28 @@ def build_image_composition_html(
                 f'data-duration="{per_this}"></video>'
             )
             media_html = ""
+        elif media_kind == "video_overlay":
+            # Pexels 视频 + kinetic 数字/大字 overlay
+            # path 是 (video_path, kinetic_html) tuple
+            vid_path, overlay_html = media_path
+            media_filename = Path(vid_path).name
+            stage_media_html.append(
+                f'<video class="bg bg-video" id="bg-{i+1}" '
+                f'src="videos/{media_filename}" muted playsinline loop '
+                f'data-track-index="0" data-start="{start}" '
+                f'data-duration="{per_this}"></video>'
+            )
+            media_html = overlay_html
+        elif media_kind == "image_overlay":
+            # Pexels 图 + kinetic 数字/大字 overlay
+            # path 是 (image_path, kinetic_html) tuple
+            img_path, overlay_html = media_path
+            media_filename = Path(img_path).name
+            media_html = (
+                f'<div class="bg" id="bg-{i+1}" '
+                f'style="background-image:url(images/{media_filename});"></div>'
+                + "\n      " + overlay_html
+            )
         elif media_kind == "kinetic":
             # 注入预先构建的 kinetic HTML（已含渐变背景 + GSAP timeline）
             media_html = media_path
@@ -1524,7 +1601,7 @@ def build_image_composition_html(
                 f'style="background-image:url(images/{media_filename});"></div>'
             )
         hook_html = ""
-        if i == 0 and media_kind != "kinetic":
+        if i == 0 and media_kind not in ("kinetic", "image_overlay", "video_overlay"):
             hook_text = wrap_caption_lines(chunk, max_chars=16, max_lines=2)
             hook_html = (
                 '<div class="hook" id="opening-hook">'
@@ -1551,12 +1628,12 @@ def build_image_composition_html(
             f'    </div>'
         )
         # Ken Burns: only for image/video scenes, NOT kinetic
-        if media_kind in ("image", "video"):
+        if media_kind in ("image", "video", "image_overlay", "video_overlay"):
             timeline_tweens.append(
                 f"tl.to('#bg-{i+1}', {{ scale: {kb['scale']}, x: {kb['x']}, y: {kb['y']}, "
                 f"ease: 'none', duration: {per_this} }}, {start});"
             )
-        if i == 0 and media_kind != "kinetic":
+        if i == 0 and media_kind not in ("kinetic", "image_overlay", "video_overlay"):
             timeline_tweens.append(
                 "tl.fromTo('#opening-hook', { opacity: 0, scale: 0.92 }, "
                 "{ opacity: 1, scale: 1, duration: 0.25, ease: 'power3.out' }, 0.1);"
@@ -1622,6 +1699,17 @@ def build_image_composition_html(
       width: 100%; height: 100%; object-fit: cover;
       transform: scale(1.0) translate(0, 0);
       will-change: transform;
+    }}
+    /* kinetic overlay: 叠在 Pexels 图/视频上的前景层。
+       透明背景 + 底部黑色 scrim 提高文字可读性。
+       纯 kinetic 场景不走这条路——它们用 inline gradient。 */
+    .kinetic-overlay {{
+      position: absolute; inset: 0;
+      background: linear-gradient(180deg, rgba(0, 0, 0, 0) 30%, rgba(0, 0, 0, 0.55) 100%);
+      display: flex; flex-direction: column; justify-content: center; align-items: center;
+      z-index: 2;
+      padding: 0 8%;
+      text-align: center;
     }}
     /* Hook 钩子：抖音科普风，去掉黑底黄边，改为居中大白字 + 强黑描边。
        字号更大、视觉冲击更强，4.5 秒后切到普通字幕。 */
