@@ -182,6 +182,23 @@ def test_v1_cache_invalidated():
 
 # ── build_visual_prompt tests ──────────────────────────────────────────
 
+def test_system_prompt_guides_comprehensive_avoid():
+    """The system prompt must guide the LLM to include human-body parts
+    in `avoid` — without explicit guidance the LLM defaults to just
+    'people, faces, text' and image-01 happily renders human hands even
+    when the subject is an inanimate object."""
+    assert "hands" in ek.SYSTEM_PROMPT, (
+        "SYSTEM_PROMPT should mention hands/limbs as avoid defaults"
+    )
+    assert "watermark" in ek.SYSTEM_PROMPT
+    # Worked examples must also include the expanded avoid list.
+    ex_prompt = ek.build_spec_prompt("test", ["x"])
+    assert "hands" in ex_prompt
+    assert "skin" in ex_prompt
+
+
+# ── build_visual_prompt tests ──────────────────────────────────────────
+
 def test_build_visual_prompt_with_spec():
     spec = {
         "subject": "stopwatch ticking hand",
@@ -413,6 +430,7 @@ def main():
         test_real_chunks_aligned_when_pad_trailing,
         test_wrong_count_falls_back_to_all_empty,
         test_llm_returns_full_length,
+        test_system_prompt_guides_comprehensive_avoid,
     ]
     passed = 0
     failed = 0

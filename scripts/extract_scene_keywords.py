@@ -65,8 +65,15 @@ SYSTEM_PROMPT = (
     f"                    ('urgent, focused', 'calm, contemplative').\n"
     f"  - color_palette: 1-2 English color names ('dark teal + neon red',\n"
     f"                    'warm gold + black').\n"
-    f"  - avoid:         what should NOT appear ('people, faces, text, brand logos'\n"
-    f"                    or 'crowd, daylight' depending on what the chunk is about).\n"
+    f"  - avoid:         what should NOT appear. Pick the visual noise most likely\n"
+    f"                    to distract from `subject`. Always consider:\n"
+    f"                      - human parts: hands, fingers, limbs, skin (unless the\n"
+    f"                        subject explicitly IS a hand, e.g. 'thumb swipe')\n"
+    f"                      - text/labels: text, captions, brand logos, watermarks\n"
+    f"                      - generic crowd: people, faces, bodies (when subject\n"
+    f"                        is an object)\n"
+    f"                    Then add chunk-specific noise ('crowd, daylight' for\n"
+    f"                    an indoor concept; 'water, blur' for a dry subject).\n"
     f"Output: JSON only, no prose, no markdown fences. Keys must be exactly\n"
     f"{', '.join(SPEC_FIELDS)} (snake_case).\n"
 )
@@ -80,18 +87,18 @@ def build_spec_prompt(theme: str, chunks: list[str]) -> str:
         "JSON 对象字段: subject / shot / mood / color_palette / avoid（英文）。",
         "",
         "示例:",
-        "  '大脑六成是脂肪' → "
-        '{"subject": "human brain cross-section", "shot": "close-up", '
-        '"mood": "clinical, focused", "color_palette": "pink + soft white", '
-        '"avoid": "people, faces, text"}',
+        "  '你体内的脂肪是这样堆积的' → "
+        '{"subject": "yellow adipose tissue cluster", "shot": "close-up", '
+        '"mood": "clinical, focused", "color_palette": "warm yellow + soft white", '
+        '"avoid": "people, faces, hands, skin, text, brand logos, watermarks"}',
         "  '三十岁的人骨头会像六十岁' → "
         '{"subject": "osteoporosis bone x-ray", "shot": "close-up", '
         '"mood": "stark, concerning", "color_palette": "muted gray + dark blue", '
-        '"avoid": "people, faces, text"}',
+        '"avoid": "people, faces, hands, skin, text, brand logos"}',
         "  '前 0.5 秒钩住你' → "
-        '{"subject": "stopwatch ticking hand", "shot": "extreme close-up", '
+        '{"subject": "stopwatch second hand ticking", "shot": "extreme close-up", '
         '"mood": "urgent, suspenseful", "color_palette": "black + neon red", '
-        '"avoid": "people, faces, text, brand logos"}',
+        '"avoid": "people, faces, human hands, skin, text, brand logos, watermarks"}',
         "",
         "脚本片段:",
     ]
