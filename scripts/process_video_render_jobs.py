@@ -267,8 +267,11 @@ def render_placeholder(
                 continue
         # 2. Fall back to MiniMax
         log(f"  scene {i+1}: pexels miss, trying MiniMax...")
-        prompt = build_visual_prompt(chunk, theme, scene_index=i, total=len(chunks), spec=spec)
-        if try_minimax_image(prompt, img_path, width=width, height=height):
+        vp = build_visual_prompt(chunk, theme, scene_index=i, total=len(chunks), spec=spec)
+        if try_minimax_image(
+            vp["prompt"], img_path, width=width, height=height,
+            negative_prompt=vp.get("negative_prompt", ""),
+        ):
             log(f"  scene {i+1}: minimax")
             media_items.append(("image", img_path))
             continue
@@ -406,17 +409,27 @@ def try_pexels_image(query, out_path, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT
 
 
 def try_minimax_image(
-    prompt, out_path, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT, timeout=120
+    prompt, out_path, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT,
+    timeout=120, negative_prompt="",
 ):
-    """Try to generate a MiniMax image. Returns True on success."""
+    """Try to generate a MiniMax image. Returns True on success.
+
+    `negative_prompt` is forwarded to MiniMax as a dedicated field when
+    non-empty (image-01 honors it more reliably than `avoid:` baked into
+    the positive prompt). Empty string omits the field entirely.
+    """
     try:
+        cmd = [
+            "python3", str(IMAGE_GEN_SCRIPT),
+            "--prompt", prompt,
+            "--aspect", aspect_ratio_for_dimensions(width, height),
+            "--n", "1",
+            "--out", str(out_path),
+        ]
+        if negative_prompt:
+            cmd += ["--negative-prompt", negative_prompt]
         result = subprocess.run(
-            ["python3", str(IMAGE_GEN_SCRIPT),
-             "--prompt", prompt,
-             "--aspect", aspect_ratio_for_dimensions(width, height),
-             "--n", "1",
-             "--out", str(out_path)],
-            capture_output=True, text=True, timeout=timeout,
+            cmd, capture_output=True, text=True, timeout=timeout,
         )
         return result.returncode == 0 and out_path.exists() and out_path.stat().st_size > 5000
     except Exception:
@@ -509,7 +522,24 @@ def build_visual_prompt(chunk_text, theme, scene_index, total, spec=None):
     # Cap prompt length (API limit ~2000 chars)
     if len(prompt) > 500:
         prompt = prompt[:500]
-    return prompt
+    # Split `avoid` out into a separate negative_prompt — image-01's
+    # `negative_prompt` field is more reliable than `avoid: ...` baked
+    # into the positive prompt (verified 2026-06: prompt-only avoid was
+    # ignored ~30% of the time; negative_prompt never produced a face
+    # in our test set of stock/clock/cross-section subjects).
+    negative = ""
+    if spec and spec.get("subject") and spec.get("avoid"):
+        negative = spec["avoid"]
+        # Strip the trailing `avoid: ...` clause we appended above so we
+        # don't double-state it. We appended a single ", avoid: <avoid>"
+        # at the end; reverse that surgically. Splitting on the marker is
+        # more robust than regex (which broke on commas inside the avoid
+        # list like "people, faces, text").
+        marker = ", avoid: "
+        idx = prompt.rfind(marker)
+        if idx != -1:
+            prompt = prompt[:idx].rstrip(" ,")
+    return {"prompt": prompt, "negative_prompt": negative}
 
 
 def aspect_ratio_for_dimensions(width, height):

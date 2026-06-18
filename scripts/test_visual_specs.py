@@ -190,23 +190,33 @@ def test_build_visual_prompt_with_spec():
         "color_palette": "black + neon red",
         "avoid": "people, faces, text",
     }
-    prompt = pv.build_visual_prompt("前 0.5 秒钩住你", "抖音三秒钩子", 0, 15, spec=spec)
+    vp = pv.build_visual_prompt("前 0.5 秒钩住你", "抖音三秒钩子", 0, 15, spec=spec)
+    prompt = vp["prompt"]
+    negative = vp["negative_prompt"]
     # spec subject must appear, Chinese chunk text should NOT (it's
     # replaced by the structured English subject)
     assert "stopwatch ticking hand" in prompt
     assert "extreme close-up" in prompt
     assert "urgent, suspenseful" in prompt
     assert "black + neon red" in prompt
-    assert "avoid: people, faces, text" in prompt
     assert "前 0.5 秒钩住你" not in prompt
+    # `avoid` is split out into negative_prompt — not baked into the
+    # positive prompt anymore (image-01 honors the dedicated field more
+    # reliably than `avoid: ...` in the prompt).
+    assert negative == "people, faces, text"
+    assert "avoid:" not in prompt
+    assert "people, faces, text" not in prompt
 
 
 def test_build_visual_prompt_without_spec_falls_back():
     """No spec → legacy path uses Chinese chunk + rotating shot."""
-    prompt = pv.build_visual_prompt("前 0.5 秒钩住你", "抖音三秒钩子", 0, 15)
+    vp = pv.build_visual_prompt("前 0.5 秒钩住你", "抖音三秒钩子", 0, 15)
+    prompt = vp["prompt"]
     assert "前 0.5 秒钩住你" in prompt
     # scene_index=0 → first shot in the rotation
     assert "wide establishing shot" in prompt
+    # No spec → no negative_prompt
+    assert vp["negative_prompt"] == ""
 
 
 def test_build_visual_prompt_partial_spec():
@@ -214,10 +224,13 @@ def test_build_visual_prompt_partial_spec():
     (other fields empty, joined with comma + space)."""
     spec = {"subject": "clock", "shot": "", "mood": "",
             "color_palette": "", "avoid": ""}
-    prompt = pv.build_visual_prompt("x", "y", 0, 1, spec=spec)
+    vp = pv.build_visual_prompt("x", "y", 0, 1, spec=spec)
+    prompt = vp["prompt"]
     assert "clock" in prompt
     # Empty fields collapse to ", ," sequences — just verify no crash.
     assert len(prompt) > 0
+    # No avoid → no negative_prompt
+    assert vp["negative_prompt"] == ""
 
 
 # ── Realignment tests (trailing-pad scenario) ───────────────────────

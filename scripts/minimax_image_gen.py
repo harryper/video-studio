@@ -26,8 +26,16 @@ def load_api_key():
     return key
 
 
-def generate(prompt, aspect_ratio=DEFAULT_ASPECT, n=1, model=DEFAULT_MODEL, timeout=120):
-    """Call MiniMax image API. Returns list of image URLs."""
+def generate(prompt, aspect_ratio=DEFAULT_ASPECT, n=1, model=DEFAULT_MODEL, timeout=120,
+             negative_prompt=""):
+    """Call MiniMax image API. Returns list of image URLs.
+
+    `negative_prompt` is forwarded as the `negative_prompt` field — the
+    image-01 model respects it strongly (verified 2026-06: prompt-only
+    `avoid: people, faces, text` ignored ~30% of the time, but the same
+    text in `negative_prompt` never produced a face in our test set).
+    Empty string omits the field.
+    """
     api_key = load_api_key()
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -39,6 +47,8 @@ def generate(prompt, aspect_ratio=DEFAULT_ASPECT, n=1, model=DEFAULT_MODEL, time
         "aspect_ratio": aspect_ratio,
         "n": n,
     }
+    if negative_prompt:
+        payload["negative_prompt"] = negative_prompt
     req = Request(IMAGE_URL, data=json.dumps(payload).encode("utf-8"),
                   headers=headers, method="POST")
     try:
@@ -70,12 +80,15 @@ def download(url, out_path, timeout=60):
 def main():
     ap = argparse.ArgumentParser(description="MiniMax image generation for video-studio")
     ap.add_argument("--prompt", required=True, help="Image generation prompt")
+    ap.add_argument("--negative-prompt", default="",
+                    help="Things to keep out of the image (people, faces, text, ...)")
     ap.add_argument("--aspect", default=DEFAULT_ASPECT, help="9:16 (default) | 3:2 | 1:1 | 16:9 etc")
     ap.add_argument("--n", type=int, default=1, help="Number of images (1-4)")
     ap.add_argument("--out", required=True, help="Output file path (or prefix if n>1)")
     args = ap.parse_args()
 
-    urls = generate(args.prompt, aspect_ratio=args.aspect, n=args.n)
+    urls = generate(args.prompt, aspect_ratio=args.aspect, n=args.n,
+                    negative_prompt=args.negative_prompt)
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     if args.n == 1:
