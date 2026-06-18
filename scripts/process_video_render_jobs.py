@@ -209,6 +209,21 @@ def render_placeholder(
     except Exception:
         job_seed = 0
     for i, chunk in enumerate(chunks):
+        # Pad chunk (split_script_to_cards trailing ""): skip Pexels and
+        # write a cheap gradient placeholder. build_image_composition_html
+        # also skips pad scenes (their chunk is empty, so the HTML side
+        # never reads these images) — the gradient just keeps media_items
+        # positionally aligned with chunks.
+        if not chunk or not chunk.strip():
+            img_path = images_dir / f"scene_{i+1}.jpg"
+            if not (img_path.exists() and img_path.stat().st_size > 5000):
+                create_fallback_image(
+                    img_path, scene_index=i, total=len(chunks),
+                    width=width, height=height,
+                )
+            log(f"  scene {i+1}: pad (gradient placeholder)")
+            media_items.append(("image", img_path))
+            continue
         # 优先用 LLM visual spec；spec 缺失时回落到正则启发式
         spec = keywords_per_scene[i] if i < len(keywords_per_scene) else {}
         if spec and spec.get("subject"):
@@ -328,6 +343,22 @@ def render_placeholder(
         raise RuntimeError(f"hyperframes render failed: {(result.stderr or result.stdout)[-1000:]}")
     if not out_mp4.exists():
         raise RuntimeError("render exit 0 but video-only.mp4 missing")
+    # out_mp4.exists() can lie: hyperframes writes the file but the moov
+    # atom may not be relocated yet, leaving an unplayable mp4. ffprobe
+    # catches that — refuse to ship a video that no player can decode.
+    probe = subprocess.run(
+        ["ffprobe", "-v", "error", "-count_packets",
+         "-select_streams", "v:0",
+         "-show_entries", "stream=nb_read_packets",
+         "-of", "csv=p=0",
+         str(out_mp4)],
+        capture_output=True, text=True, timeout=30,
+    )
+    if probe.returncode != 0 or not (probe.stdout or "").strip():
+        raise RuntimeError(
+            f"hyperframes mp4 unreadable (ffprobe failed): "
+            f"{(probe.stderr or '')[-500:]}"
+        )
     return out_mp4
 
 

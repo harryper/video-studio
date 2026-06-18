@@ -340,28 +340,32 @@ def extract_visual_specs(
     session_key = f"agent:main:video-studio-vspec-{job_id}"
     result = _call_llm(theme, chunks, session_key)
 
-    # Re-align LLM output with the original chunks list. The LLM naturally
-    # drops trailing empty (pad) chunks ("[11] " / blank line), so it
-    # returns N_real specs where len(chunks) = N_real + N_pad. We map them
-    # back positionally: real (non-empty) chunks get their spec; pad chunks
-    # stay empty. If the LLM returns the wrong count for *real* chunks we
-    # treat it as a parse failure and fall back to all-empty.
+    # Re-align LLM output with the original chunks list. The LLM's
+    # behavior is inconsistent: it sometimes drops trailing empty (pad)
+    # chunks and returns N_real specs, sometimes pads its own entries
+    # for them and returns N_chunks specs. We accept either length and
+    # map positionally:
+    #   - len(result) == n_real  → zip with non_empty_indices
+    #   - len(result) == len(chunks) → 1:1
+    # Anything else is treated as a parse failure.
     non_empty_indices = [i for i, c in enumerate(chunks) if c.strip()]
     n_real = len(non_empty_indices)
-    n_pad = len(chunks) - n_real
 
-    if result is None or len(result) != n_real:
-        if result is not None and len(result) != n_real:
-            print(
-                f"[extract_scene_keywords] LLM returned {len(result)} specs but "
-                f"{n_real} non-empty chunks; using empty specs",
-                file=sys.stderr,
-            )
+    if result is None:
         normalized = [{f: "" for f in SPEC_FIELDS} for _ in chunks]
-    else:
+    elif len(result) == n_real:
         normalized = [{f: "" for f in SPEC_FIELDS} for _ in chunks]
         for idx, spec in zip(non_empty_indices, result):
             normalized[idx] = _coerce_spec(spec)
+    elif len(result) == len(chunks):
+        normalized = [_coerce_spec(item) for item in result]
+    else:
+        print(
+            f"[extract_scene_keywords] LLM returned {len(result)} specs "
+            f"(expected {n_real} non-empty or {len(chunks)} total); using empty specs",
+            file=sys.stderr,
+        )
+        normalized = [{f: "" for f in SPEC_FIELDS} for _ in chunks]
 
     try:
         run_dir.mkdir(parents=True, exist_ok=True)

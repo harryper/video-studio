@@ -331,6 +331,56 @@ def test_wrong_count_falls_back_to_all_empty():
         shutil.rmtree(run_dir, ignore_errors=True)
 
 
+def test_llm_returns_full_length():
+    """LLM sometimes pads its own entries for empty chunks and returns
+    len(chunks) specs. We should accept that and 1:1 map, not fall back
+    to all-empty (which would be a regression on the working L2 path)."""
+    job_id = "test_llm_full"
+    run_dir = Path(tempfile.mkdtemp(prefix="vspec_full_"))
+    try:
+        ek.RUNS_DIR.mkdir(exist_ok=True)
+        link = ek.RUNS_DIR / job_id
+        if link.exists() or link.is_symlink():
+            link.unlink()
+        link.symlink_to(run_dir)
+        try:
+            chunks = ["前 0.5 秒钩住你", "中间刺激", "", ""]
+            theme = "test"
+
+            def fake_call(theme_arg, chunks_arg, session_key):
+                # LLM returns 4 specs (matches chunks length) — sometimes
+                # it pads its own for blank chunks
+                return [
+                    {"subject": "stopwatch", "shot": "close-up",
+                     "mood": "urgent", "color_palette": "black", "avoid": "text"},
+                    {"subject": "metronome", "shot": "close-up",
+                     "mood": "pulsing", "color_palette": "black", "avoid": "faces"},
+                    {"subject": "blank fill", "shot": "",
+                     "mood": "", "color_palette": "", "avoid": ""},
+                    {"subject": "blank fill", "shot": "",
+                     "mood": "", "color_palette": "", "avoid": ""},
+                ]
+
+            orig = ek._call_llm
+            ek._call_llm = fake_call
+            try:
+                specs = ek.extract_visual_specs(job_id, theme, chunks)
+            finally:
+                ek._call_llm = orig
+
+            assert len(specs) == 4
+            # Positional 1:1 — no realignment needed
+            assert specs[0]["subject"] == "stopwatch"
+            assert specs[1]["subject"] == "metronome"
+            assert specs[2]["subject"] == "blank fill"
+            assert specs[3]["subject"] == "blank fill"
+        finally:
+            if link.exists() or link.is_symlink():
+                link.unlink()
+    finally:
+        shutil.rmtree(run_dir, ignore_errors=True)
+
+
 # ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -349,6 +399,7 @@ def main():
         test_build_visual_prompt_partial_spec,
         test_real_chunks_aligned_when_pad_trailing,
         test_wrong_count_falls_back_to_all_empty,
+        test_llm_returns_full_length,
     ]
     passed = 0
     failed = 0
