@@ -226,19 +226,28 @@ def render_placeholder(
             continue
         # 优先用 LLM visual spec；spec 缺失时回落到正则启发式
         spec = keywords_per_scene[i] if i < len(keywords_per_scene) else {}
+        # 2026-06-18 修复:当 spec avoid 含 Pexels 瞎的关键词(hand/face/
+        # text/watermark 等)时,跳过 Pexels 直走 MiniMax —— Pexels API
+        # 不支持 negative keyword,query 怎么调都返回 hands-on-phone。
+        # 同时跳过 Pexels 缓存(否则仍会用到旧的 Pexels 图)。
+        skip_pexels = _spec_skip_pexels(spec)
         if spec and spec.get("subject"):
-            # spec 驱动：subject 是英文具体可拍物体；shot 作为 Pexels 的
-            # 取景修饰。两者一起喂 Pexels,比旧的"中文前 4 字 + close-up"
-            # 命中率高很多(Pexels 是英文索引,按 tag 匹配)。
-            shot_word = (spec.get("shot") or "").strip().split()[0] if spec.get("shot") else ""
+            # spec 驱动:subject 是英文具体可拍物体;shot 整段做 Pexels
+            # 取景修饰(2026-06-18 修复:之前只取 shot.split()[0],丢掉了
+            # "close-up" 这种关键 tag,导致"phone screen ... extreme"返
+            # 回 hands-on-phone 而不是屏幕特写)。
             parts = [spec["subject"]]
-            if shot_word:
-                parts.append(shot_word)
-            base_query = " ".join(parts)[:60]
+            shot_full = " ".join((spec.get("shot") or "").split())
+            if shot_full and shot_full.lower() not in spec["subject"].lower():
+                parts.append(shot_full)
+            base_query = " ".join(parts)[:80]
         else:
             base_query = extract_pexels_query(chunk, theme, i)
         offset = (i * 3 + job_seed) % 5
         # Use real motion footage for roughly one third of the scenes.
+        # skip_pexels 不挡 Pexels 视频:Pexels 视频(stopwatch/抽象动效)
+        # 不像 Pexels 图片那样被"人手"主导,值得保留。Pexels 视频失败时
+        # 自然 fall through 到下面的 MiniMax 静态图路径。
         if i % 3 == 1:
             video_path = videos_dir / f"scene_{i+1}.mp4"
             if (
@@ -249,24 +258,34 @@ def render_placeholder(
                 media_items.append(("video", video_path))
                 continue
         img_path = images_dir / f"scene_{i+1}.jpg"
-        if img_path.exists() and img_path.stat().st_size > 5000:
+        # cache only honored when not skip_pexels — Pexels cache is "stale"
+        # by new rules when spec says avoid hands/face/text.
+        if not skip_pexels and img_path.exists() and img_path.stat().st_size > 5000:
             log(f"  scene {i+1}: cached")
             media_items.append(("image", img_path))
             continue
         # 1. Try Pexels (带 offset 避免每次都拿第一张)
-        if try_pexels_image(base_query, img_path, width=width, height=height, offset=offset):
+        if not skip_pexels and try_pexels_image(
+            base_query, img_path, width=width, height=height, offset=offset
+        ):
             log(f"  scene {i+1}: pexels (q={base_query!r}, offset={offset})")
             media_items.append(("image", img_path))
             continue
         # 1b. spec 缺失时，再试 chunk 原文本（中文 Pexels 兜底）
-        if not (spec and spec.get("subject")):
+        if not (spec and spec.get("subject")) and not skip_pexels:
             fallback_q = extract_pexels_query(chunk, theme, i)
             if try_pexels_image(fallback_q, img_path, width=width, height=height, offset=offset):
                 log(f"  scene {i+1}: pexels fallback (q={fallback_q!r})")
                 media_items.append(("image", img_path))
                 continue
-        # 2. Fall back to MiniMax
-        log(f"  scene {i+1}: pexels miss, trying MiniMax...")
+        # 2. MiniMax (Pexels 跳过时,这里是主路径;否则是 Pexels miss 后的兜底)
+        if skip_pexels:
+            log(
+                f"  scene {i+1}: spec avoid={spec.get('avoid', '')[:60]!r} "
+                f"contains Pexels-blind keywords, going to MiniMax"
+            )
+        else:
+            log(f"  scene {i+1}: pexels miss, trying MiniMax...")
         vp = build_visual_prompt(chunk, theme, scene_index=i, total=len(chunks), spec=spec)
         if try_minimax_image(
             vp["prompt"], img_path, width=width, height=height,
@@ -434,6 +453,40 @@ def try_minimax_image(
         return result.returncode == 0 and out_path.exists() and out_path.stat().st_size > 5000
     except Exception:
         return False
+
+
+# Pexels search API 不支持 negative keyword —— 它只能正向 tag-match,
+# 没办法说"不要 hands/face/text/watermark"。当 L2 spec 的 avoid 字段
+# 包含这些项时,无论 query 怎么调,Pexels 都会把含 hands/face 的库存图
+# 排前面(因为 "phone screen" 这类 query 的库存图就是人手拿手机)。
+# 此时应跳过 Pexels,直接走 MiniMax(支持 negative_prompt)。
+#
+# 这里列出的是 Pexels 真正"瞎"的关键词。构图/色调/景深类的(如
+# "busy background", "warm light")Pexels 用 query 修饰能凑合避开,
+# 不在此列。
+PEXELS_BLIND_AVOID_KEYWORDS = (
+    "people", "person", "human", "face", "facial", "head",
+    "hand", "hands", "finger", "fingers", "skin", "palm",
+    "text", "typography", "lettering", "watermark", "watermarks",
+    "logo", "logos", "brand", "branding",
+)
+
+
+def _spec_skip_pexels(spec):
+    """Return True if spec's avoid field has keywords Pexels can't filter.
+
+    用 word-boundary 正则匹配,避免 "handy" 误匹配 "hand"、
+    "non-human" 误匹配 "human" 等子串问题。
+    """
+    if not spec:
+        return False
+    avoid = (spec.get("avoid") or "").lower()
+    if not avoid.strip():
+        return False
+    for kw in PEXELS_BLIND_AVOID_KEYWORDS:
+        if re.search(rf"\b{re.escape(kw)}\b", avoid):
+            return True
+    return False
 
 
 def extract_pexels_query(chunk_text, theme, scene_index):
