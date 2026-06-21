@@ -382,26 +382,23 @@ def test_v71_quan_ta_orphan_verb():
     )
 
 
-def test_v8_hard_cut_no_orphan_tail_char():
-    # v8: alignment-merged super-sentence (4 commas → 63 chars) triggers
-    # hard-cut fallback because soft range [first_safe=21, hard_max=20) is
-    # empty. v7's back-up loop stopped at end=17 (CJK-CJK boundary,
-    # back_limit reached) producing "...,忍了,这 | 一忍..." where "这"
-    # orphaned on the head. v8 backs up further to the nearest PUNCT/space
-    # so the cut sits on punctuation: "...,忍了, | 这一忍..." — no orphan.
+def test_v81_hard_cut_punct_boundary_acceptable():
+    # v8.1: alignment-merged super-sentence hard-cuts at the nearest
+    # PUNCT/space within [first_safe-4, hard_max). When no boundary is
+    # in range (back_limit reached), the cut lands mid-CJK and the
+    # tail character is handled by the next recursion. This is the
+    # "按标题符号分一行, 剩下的下一行" behavior the user accepted —
+    # the trailing character on sub-0 is the START of sub-1's phrase,
+    # not an orphan to be eliminated by aggressive back-up.
     text = "一个能秒掉整个朝代的神仙,忍了,这一忍就是整整28年,中间隔了2次封神、3次朝堂清洗、5次人间王朝更替,你就知道这克制有多深。"
     subs = rv._split_sentence_into_subs(text, max_chars=20, hard_max=20)
-    assert len(subs) >= 2, f"expected ≥2 subs, got {subs!r}"
-    # First sub ends on a PUNCT (comma) — "这" must not orphan on its tail.
-    assert subs[0].rstrip()[-1] in "。！？，；：、,?!", (
-        f"sub-0 ends with bare char {subs[0].rstrip()[-1]!r} → orphan: {subs[0]!r}"
-    )
-    # Second sub must START with the head word of the next phrase, not a
-    # fragment stranded from the previous sub.
-    assert subs[1].lstrip()[:2] == "这一", (
-        f"sub-1 should start with '这一' but got {subs[1]!r}"
-    )
-    # Wrapped lines must each be readable.
+    assert len(subs) >= 2
+    # Each sub should be ≤ hard_max chars (no over-long sub-caption).
+    for j, sub in enumerate(subs):
+        assert len(sub) <= 20, (
+            f"sub-{j} exceeds hard_max: {len(sub)} chars in {sub!r}"
+        )
+    # Each sub should wrap to a single readable line.
     for j, sub in enumerate(subs):
         display = rv._strip_punctuation(sub)
         if not display:
@@ -439,7 +436,7 @@ def main():
         test_v7_coffee_melatonin_dense_cjk_digits,
         test_v7_v6_not_regressed,
         test_v71_quan_ta_orphan_verb,
-        test_v8_hard_cut_no_orphan_tail_char,
+        test_v81_hard_cut_punct_boundary_acceptable,
     ]
     passed = 0
     failed = 0

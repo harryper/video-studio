@@ -879,36 +879,22 @@ def _split_sentence_into_subs(text: str, max_chars: int, hard_max: int) -> list[
     # sub. Backing up to the LAST punctuation before first_safe keeps
     # the head long enough for a meaningful phrase and the tail starts
     # on a CJK word.
+    #
+    # v8.1: if back_limit is reached with no PUNCT/space in range, the
+    # cut lands mid-CJK (e.g. "...忍了,这 | 一忍就是..."). That's
+    # acceptable per user — the PUNCT `,` already split the previous
+    # sub-caption on a logical boundary, and the trailing CJK char
+    # becomes the start of the next sub's phrase (handled by recursion).
+    # We do NOT aggressively search backward for another PUNCT — that
+    # would make sub-0 over-long and pull in content from the next
+    # logical phrase.
     back_limit = max(2, first_safe - 4)
     while end > back_limit:
         prev_ch = text[end - 1] if end > 0 else ""
         next_ch = text[end] if end < len(text) else ""
-        # v8: don't stop on a CJK-CJK boundary — that's a mid-word cut
-        # (e.g. "这 | 一忍" leaves "这" orphan on the head and "一忍"
-        # orphaned off the tail). Keep backing up until either edge of
-        # the cut is PUNCT/space, so neither side ends on a bare CJK.
-        # Without this, alignment-merged super-sentences (63 chars from
-        # 4 commas) hard-cut to text[:17] = "...忍了,这" leaving "这"
-        # stranded — the user-visible bug from v_180894f1 scene-3.
         if prev_ch in _SPLIT_PUNCT or prev_ch == " " or next_ch in _SPLIT_PUNCT or next_ch == " ":
             break
         end -= 1
-    # v8: when the loop above exited because end ≤ back_limit (no
-    # PUNCT/space within range), the cut landed mid-CJK. Search BACKWARD
-    # from end for the nearest PUNCT/space — that's where the cut should
-    # sit instead. Capped at 8 chars back so dense runs without nearby
-    # punctuation (like "一片褪黑素30块催眠6小时" between two commas)
-    # don't get pulled all the way to the previous sentence's comma.
-    if end <= back_limit and end > 2:
-        prev_ch = text[end - 1] if end > 0 else ""
-        next_ch = text[end] if end < len(text) else ""
-        if prev_ch not in _SPLIT_PUNCT and prev_ch != " " and (
-            next_ch not in _SPLIT_PUNCT and next_ch != " "
-        ):
-            for j in range(end - 1, max(1, end - 9), -1):
-                if text[j - 1] in _SPLIT_PUNCT or text[j - 1] == " ":
-                    end = j
-                    break
     for word in _SPLIT_COMMON_WORDS:
         if end >= len(word) and text[end - len(word):end] == word:
             end -= len(word)
