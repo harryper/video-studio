@@ -725,7 +725,13 @@ def _load_alignment_scene_times(job_id, chunks, total_duration):
 
 # Split-priority chars for `_split_sentence_into_subs`. Order = preference:
 # (punctuation, particles, pronouns, common 2-3 char words).
-_SPLIT_PUNCT = "。！？，；：、"
+# Include both full-width and ASCII punctuation. LLM writes English
+# commas/periods (Pexels/MiniMax prompts default), so ASCII versions
+# must be honored or `_split_sentence_into_subs` will silently skip
+# real sentence boundaries and fall back to mid-phrase particle cuts
+# (e.g. splitting "今天算的是,你这一辈子,被房贷偷走的购买力" at
+# the "的" particle instead of either comma).
+_SPLIT_PUNCT = "。！？，；：、,?!"
 _SPLIT_PARTICLES = "的了着过啊吧呢嘛呀"
 _SPLIT_PRONOUNS = "我你他她它们"
 _SPLIT_COMMON_WORDS = (
@@ -770,6 +776,21 @@ def _split_sentence_into_subs(text: str, max_chars: int, hard_max: int) -> list[
             candidates.append((1, i, range_kind_soft))
         elif next_ch in _SPLIT_PRONOUNS and i + 1 < len(text) and in_soft:
             candidates.append((2, i, range_kind_soft))
+    # v7.1: if soft range has NO PUNCT candidate (only PARTICLE/PRONOUN),
+    # also scan just before first_safe for a PUNCT that the soft range
+    # missed. Example: "你劝年轻人早睡,等于劝他放弃一天..." has a PUNCT
+    # at i=8 (the comma after 早睡) but first_safe=10 skips it. Without
+    # this, the only candidate is the PRONOUN split at i=11 which leaves
+    # "等于劝" orphaned on the head. Tag these as range_kind_soft too
+    # since they're punctuation — the tie-breaker (prio=0) will still
+    # prefer them over any PARTICLE/PRONOUN.
+    has_punct_soft = any(rk == range_kind_soft and p == 0 for p, _, rk in candidates)
+    if not has_punct_soft:
+        early_limit = max(4, first_safe - 4)
+        for i in range(early_limit, first_safe):
+            prev_ch = text[i - 1] if i > 0 else ""
+            if prev_ch in _SPLIT_PUNCT:
+                candidates.append((0, i, range_kind_soft))
     if candidates:
         # Tie-breaker key (lower wins):
         #   (rk, prio, head_penalty, balance_diff, range_excess)
@@ -786,7 +807,14 @@ def _split_sentence_into_subs(text: str, max_chars: int, hard_max: int) -> list[
         best = None  # (key_tuple, end)
         for prio, end, rk in candidates:
             tail_len = len(text) - end
-            if tail_len < 3:
+            # Reject very short tails. 3-char tails like "购买力" orphan a
+            # meaningful noun from its modifier (e.g. "被房贷偷走的购买力"
+            # → "被房贷偷走的" / "购买力" reads as two fragments, not a
+            # phrase). Bumping the min to 5 forces the algorithm to look
+            # for a better split point (or fall through to the no-split
+            # path, letting wrap handle the 21-char sentence via midpoint
+            # cut at a comma).
+            if tail_len < 5:
                 continue
             head_len = end
             # Skip candidates whose head is unreasonably long for this
@@ -794,15 +822,32 @@ def _split_sentence_into_subs(text: str, max_chars: int, hard_max: int) -> list[
             # sub-caption. Recursion handles the rest.
             if head_len > 2 * hard_max:
                 continue
-            if tail_len > hard_max:
-                # Tail too long even for hard_max; skip — recursion
-                # will need to handle the tail later via hard-cut.
+            # v6: reject any candidate whose head would wrap to 2 visual
+            # lines. Strip preserves char count (comma → space, same len),
+            # so head_len > max_chars guarantees a 2-line display. The
+            # algorithm must fall through to hard-cut at max_chars so each
+            # produced sub-chunk is ≤ max_chars.
+            if head_len > max_chars:
                 continue
+            # v7.1: don't reject tail>hard_max outright — penalize instead.
+            # PUNCT splits with long tails (will be recursively split) are
+            # still better than accepting a PRONOUN split that orphans a
+            # character on the head. The recursion in the post-loop block
+            # handles long tails cleanly.
             head_penalty = 0 if head_len <= max_chars else (head_len - max_chars) * 10
             balance_diff = abs(max(head_len, tail_len) - max_chars / 2)
             tail_penalty = 0 if tail_len <= max_chars else (tail_len - max_chars) * 5
             range_excess = max(0, end - hard_max) if rk == range_kind_hard else 0
-            key = (rk, prio, head_penalty, balance_diff, tail_penalty, range_excess)
+            # v7.1: prefer cuts where the head ends on punctuation/space
+            # over cuts that leave a bare character dangling. The PRONOUN
+            # rule can land on "等于劝|他放弃" → head ends in "劝" (orphan).
+            # A PUNCT cut at "等于劝," (i=10) isn't in the soft range when
+            # first_safe > 10, so we add a strong penalty for orphan-tails
+            # to push the algorithm toward recursing into the longer head
+            # rather than accepting the pronoun split.
+            tail_char = text[end - 1] if end > 0 else ""
+            head_orphan_penalty = 0 if (tail_char in _SPLIT_PUNCT or tail_char == " ") else 5
+            key = (rk, prio, head_penalty, balance_diff, tail_penalty, range_excess, head_orphan_penalty)
             if best is None or key < best[0]:
                 best = (key, end)
         if best is not None:
@@ -816,8 +861,31 @@ def _split_sentence_into_subs(text: str, max_chars: int, hard_max: int) -> list[
     if len(text) <= hard_max:
         return [text]
     # Text exceeds hard_max — hard-cut, but back up to avoid splitting a
-    # common word if possible.
+    # common word or leaving a bare character at either edge of the cut.
     end = hard_max
+    # v7: hard-cut at char `end` lands in the middle of a CJK run if no
+    # PUNCT/PARTICLE/PRONOUN candidate was found in the soft range. That
+    # leaves a single isolated character (digit or letter) on whichever
+    # side of the cut didn't get it. The user reported "通勤 2" → "通勤 "
+    # / "2 小时..." and "会议 3" → "...会议 3" / "小时 群消息..."; both
+    # come from hard-cut landing between CJK and digit. Back up to the
+    # nearest punctuation/space boundary so the cut sits AT the boundary,
+    # not inside a word.
+    #
+    # Allow backing up slightly past first_safe (up to first_safe//2 or
+    # max(2, first_safe - 4)) — without this, dense CJK+number runs like
+    # "褪黑素30块" have no punct boundary inside [first_safe, hard_max)
+    # and the cut lands mid-word, orphaning the leading CJK on the next
+    # sub. Backing up to the LAST punctuation before first_safe keeps
+    # the head long enough for a meaningful phrase and the tail starts
+    # on a CJK word.
+    back_limit = max(2, first_safe - 4)
+    while end > back_limit:
+        prev_ch = text[end - 1] if end > 0 else ""
+        next_ch = text[end] if end < len(text) else ""
+        if prev_ch in _SPLIT_PUNCT or prev_ch == " " or next_ch in _SPLIT_PUNCT or next_ch == " ":
+            break
+        end -= 1
     for word in _SPLIT_COMMON_WORDS:
         if end >= len(word) and text[end - len(word):end] == word:
             end -= len(word)
@@ -830,7 +898,11 @@ def _split_sentence_into_subs(text: str, max_chars: int, hard_max: int) -> list[
 # whitespace. The time projection in `_load_alignment_subtimes` still
 # walks the original sub_text (with punctuation) so slot_start/slot_end
 # keep tracking TTS character positions.
-_PUNCT_TO_SPACE = str.maketrans({c: " " for c in "，。！？；：、　"})
+# Strip visual-noise punctuation from subtitles.
+# Note: '.' and '%' are INTENTIONALLY kept — `.` is part of decimal numbers
+# (1.8 → tokenized as one), `%` is part of percentages (40% → one token).
+# ec82ace commit fixed wrap so "1.8"/"40%" survive — do not regress that.
+_PUNCT_TO_SPACE = str.maketrans({c: " " for c in "，。！？；：、　,?!;:;\"'()[]{}<>"})
 _ELLIPSIS_TO_SPACE = str.maketrans({c: " " for c in "…⋯"})
 
 
@@ -885,16 +957,29 @@ def _load_alignment_subtimes(job_id, scene_times, chunks, width=DEFAULT_WIDTH, h
 
     sent_spans = [(s["start"], s["end"]) for s in sentences]
     # Sub-caption char budget.
-    #   max_chars: soft ceiling — prefer to keep sentences whole under this
-    #              length. Set generously (18/12) to avoid mid-word cuts like
-    #              "自己" → "自/己".
-    #   hard_max:  hard ceiling — never exceed; only matters for >22 char
-    #              sentences (TTS fast-read cases).
+    #   max_chars: single-line cap — wrap will not split text ≤ this len.
+    #              Set generously (20/12) to keep short phrases whole.
+    #   hard_max:  hard ceiling on every produced sub-chunk. v6 sets this
+    #              EQUAL to max_chars so any sentence > max_chars must be
+    #              split (semantic split if PUNCT/PARTICLE candidate exists
+    #              in [first_safe, max_chars), else hard-cut at max_chars).
+    #              Without this, sentences 21-30 chars with no good split
+    #              in the soft range are returned whole, then wrap splits
+    #              them at midpoint into 2 lines — the exact "2-line
+    #              subtitle" bug the user keeps reporting.
     # The split is done by `_split_sentence_into_subs`, which prefers
     # semantic boundaries (punctuation > particles > pronouns > common
     # words) over hard char-cut positions.
-    max_chars = 18 if width >= height else 12
-    hard_max = 22 if width >= height else 16
+    # Bumped max_chars 18→20 (v4) and hard_max 24→30 (v6) to match the
+    # wrap_caption_lines cap: short sentences ≤ 20 chars (after
+    # punctuation strip) stay whole, and longer sentences with multiple
+    # commas can split at the EARLIEST comma rather than a weak fallback
+    # (e.g. "你以为房贷只是利息高,其实真正贵的,是复利,是时间,..." was
+    # splitting at the 3rd comma giving a 22-char head that wrapped to
+    # 2 visual lines; with hard_max=20 we hard-cut at 20 so every sub-chunk
+    # is guaranteed to display ≤ max_chars — never 2 visual lines).
+    max_chars = 20 if width >= height else 12
+    hard_max = max_chars
     MIN_SUB_DUR = 0.3  # floor: a sub-caption must stay on screen >=300ms
     SUB_GAP = 0.04     # visual gap between consecutive sub-captions
 
@@ -967,7 +1052,8 @@ def _load_alignment_subtimes(job_id, scene_times, chunks, width=DEFAULT_WIDTH, h
                     if not display_text:
                         cursor_in_sent += len(sub_text)
                         continue
-                    scene_subs.append(([display_text], slot_start, slot_end))
+                    lines = wrap_caption_lines(display_text, max_chars=20, max_lines=2)
+                    scene_subs.append((lines, slot_start, slot_end))
                     cursor_in_sent += len(sub_text)
         else:
             # Find the script-chars index where this scene's text begins.
@@ -996,7 +1082,8 @@ def _load_alignment_subtimes(job_id, scene_times, chunks, width=DEFAULT_WIDTH, h
                     sent_a, sent_b = sent_spans[j]
                     stripped = _strip_punctuation(sent_text_j)
                     if stripped:
-                        scene_subs.append(([stripped], sent_a, sent_b))
+                        lines = wrap_caption_lines(stripped, max_chars=20, max_lines=2)
+                        scene_subs.append((lines, sent_a, sent_b))
                     continue
                 # Now walk forward through script_chars, matching sent_text_j
                 # char by char, to find the [start, end] char indices for
@@ -1014,7 +1101,8 @@ def _load_alignment_subtimes(job_id, scene_times, chunks, width=DEFAULT_WIDTH, h
                     sent_a, sent_b = sent_spans[j]
                     stripped = _strip_punctuation(sent_text_j)
                     if stripped:
-                        scene_subs.append(([stripped], sent_a, sent_b))
+                        lines = wrap_caption_lines(stripped, max_chars=20, max_lines=2)
+                        scene_subs.append((lines, sent_a, sent_b))
                     cursor_char_idx = sent_end_idx
                     continue
 
@@ -1068,7 +1156,9 @@ def _load_alignment_subtimes(job_id, scene_times, chunks, width=DEFAULT_WIDTH, h
                         # correctly.
                         cursor_in_sent += len(sub_text)
                         continue
-                    scene_subs.append(([display_text], slot_start, slot_end))
+                    # Word-aware 多行 wrap (1-2 行, max 20 字/行) — 用项目已有的 _pack_lines 工具
+                    lines = wrap_caption_lines(display_text, max_chars=20, max_lines=2)
+                    scene_subs.append((lines, slot_start, slot_end))
                     cursor_in_sent += len(sub_text)
                 cursor_char_idx = sent_end_idx
         if not scene_subs:
@@ -1740,7 +1830,7 @@ def build_image_composition_html(
   <style>
     [data-composition-id="dynamic"] {{
       width: {width}px; height: {height}px; background: #0a0e1a; color: #fff;
-      font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+      font-family: "Noto Sans CJK SC", "Noto Sans CJK", -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
       overflow: hidden;
     }}
     .clip {{
@@ -1886,7 +1976,7 @@ def build_card_composition_html(chunks, total_duration=30):
   <style>
     [data-composition-id="dynamic"] {{
       width: 1080px; height: 1920px; background: #0a0e1a; color: #fff;
-      font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+      font-family: "Noto Sans CJK SC", "Noto Sans CJK", -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
       overflow: hidden;
     }}
     .clip {{
@@ -1963,13 +2053,21 @@ def _tokenize_for_wrap(text):
 
 
 def _pack_lines(text, max_chars, max_lines):
-    """Word-aware line packer.
+    """Word-aware line packer with two-line midpoint split.
 
-    Greedy fill: walk tokens, add to current line while line stays <= max_chars.
-    On overflow, flush current line; if we're at max_lines, truncate the last
-    line with an ellipsis. English tokens are never split mid-word — if a
-    single token is longer than max_chars, it goes on a line by itself and
-    gets truncated with … so the wrapping remains stable.
+    v2 algorithm (replaces old greedy fill):
+    1. If total visible chars <= max_chars → return single line.
+    2. If max_lines >= 2 and any token-boundary split yields two halves each
+       <= max_chars → pick the split whose left half is closest to total/2
+       (so the two lines are balanced).
+    3. Fallback: greedy fill + ellipsis truncate, used only for single-token
+       oversize (one word longer than max_chars) or max_lines=1.
+
+    Why this is better than greedy: greedy fill leaves a 3-4 char tail on
+    line 2 (e.g. 14+4). Midpoint split produces 9+9 / 10+8 — both lines
+    readable, break sits at a token boundary (spaces fall in the "gap"
+    because they don't count toward max_chars, so a space token often
+    coincides with the chosen split index after a CJK run).
     """
     if not text:
         return [""]
@@ -1978,9 +2076,50 @@ def _pack_lines(text, max_chars, max_lines):
         return [""]
 
     tokens = _tokenize_for_wrap(text)
+    if not tokens:
+        return [""]
+
+    # 1. Total visible char count (includes space tokens — they show in render)
+    total = sum(len(t) for t in tokens)
+
+    # 2. Single line: whole thing fits
+    if total <= max_chars:
+        return [text]
+
+    # 3. Two-line midpoint split
+    if max_lines >= 2:
+        # Build cumulative length array.
+        cum = []
+        running = 0
+        for t in tokens:
+            running += len(t)
+            cum.append(running)
+
+        half = total / 2
+        best_i = None
+        best_score = None
+        # Need: cut between token i and i+1 (so 0 < i < len(tokens)-1),
+        # left half cum[i] <= max_chars and right half (total - cum[i]) <= max_chars.
+        for i in range(1, len(tokens) - 1):
+            left = cum[i]
+            right = total - left
+            if left <= max_chars and right <= max_chars:
+                score = abs(left - half)
+                if best_score is None or score < best_score:
+                    best_score = score
+                    best_i = i
+
+        if best_i is not None:
+            left_line = "".join(tokens[: best_i + 1]).strip()
+            right_line = "".join(tokens[best_i + 1 :]).strip()
+            if left_line and right_line:
+                return [left_line, right_line]
+
+    # 4. Fallback: greedy fill + ellipsis (handles >max_chars single token
+    # or pathological cases where no balanced split exists).
     lines = []
     current = []
-    current_len = 0
+    current_len = 0  # spaces don't count toward max_chars budget
 
     def _truncate_last():
         if not lines:
@@ -1993,7 +2132,8 @@ def _pack_lines(text, max_chars, max_lines):
 
     for tok in tokens:
         tok_len = len(tok)
-        if tok_len > max_chars:
+        is_space = tok == " "
+        if tok_len > max_chars and not is_space:
             if current:
                 lines.append("".join(current))
                 current = []
@@ -2002,10 +2142,7 @@ def _pack_lines(text, max_chars, max_lines):
             if len(lines) >= max_lines:
                 return lines
             continue
-        # Allow a single CJK punct to overflow max_chars by up to 2 chars —
-        # an orphan "。" or "，" floating at line start looks like a typo.
-        punct_tolerance = 2 if tok in "。！？；，" else 0
-        if current and current_len + tok_len > max_chars + punct_tolerance:
+        if current and current_len + (0 if is_space else tok_len) > max_chars:
             lines.append("".join(current))
             current = []
             current_len = 0
@@ -2013,13 +2150,11 @@ def _pack_lines(text, max_chars, max_lines):
                 _truncate_last()
                 return lines
         current.append(tok)
-        current_len += tok_len
+        if not is_space:
+            current_len += tok_len
 
     if current:
         if len(lines) >= max_lines:
-            # We're at the line cap; try to append `current` to the last
-            # line by truncating, otherwise drop the trailing content
-            # (already-cleared last line stays as-is).
             tail = "".join(current)
             if len(tail) <= max_chars and len(lines[-1]) + len(tail) <= max_chars + 2:
                 lines[-1] = lines[-1] + tail
@@ -2028,21 +2163,19 @@ def _pack_lines(text, max_chars, max_lines):
         else:
             lines.append("".join(current))
 
+    # 0.4-merge: if the second line is a tail, try to merge back into one
+    # line. Threshold relaxed to max_chars+4 so 14+4=18 (new max) can fold.
     if len(lines) >= 2 and len(lines[-1]) < max_chars * 0.4:
         merged = lines[-2] + lines[-1]
-        if len(merged) <= max_chars:
+        if len(merged) <= max_chars + 4:
             lines = lines[:-2] + [merged]
-    # Strip leading whitespace from each line — a line that starts with " "
-    # is almost always a tokenization artifact (the space used to glue an
-    # English/digit token to the CJK that followed, but the CJK got pushed
-    # to the next line). The reader doesn't need the gap.
+
     lines = [ln.lstrip() for ln in lines]
-    # Drop empty lines that may result from the strip.
     lines = [ln for ln in lines if ln]
     return lines or [""]
 
 
-def wrap_caption_lines(text, max_chars=14, max_lines=2):
+def wrap_caption_lines(text, max_chars=20, max_lines=2):
     """Wrap caption text for 抖音-style subtitles. Word-aware; max 2 lines."""
     if not text:
         return [""]

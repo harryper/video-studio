@@ -310,6 +310,7 @@
           <a class="small" id="downloadLink" download>下载</a>
         </div>
         <div class="meta-row" id="finalMeta"></div>
+        <div id="finalNote" style="display:none;margin-top:10px;padding:10px 12px;background:#1f2937;border-left:3px solid #f59e0b;border-radius:4px;color:#fbbf24;font-size:13px"></div>
       </div>
 
       <div class="block">
@@ -451,7 +452,15 @@ function renderDetail(job) {
     document.getElementById('finalMeta').innerHTML = `
       <span><strong>时长:</strong> ${job.final.duration_sec || '—'}s</span>
       <span><strong>大小:</strong> ${formatBytes(job.final.size_bytes || 0)}</span>
+      ${job.final.preview_only ? '<span style="background:#f59e0b;color:#000;padding:2px 8px;border-radius:4px;font-weight:600">30s PREVIEW</span>' : ''}
     `;
+    if (job.final.note) {
+      const noteEl = document.getElementById('finalNote');
+      if (noteEl) {
+        noteEl.textContent = job.final.note;
+        noteEl.style.display = 'block';
+      }
+    }
     document.getElementById('downloadLink').href = newSrc;
   } else {
     document.getElementById('finalBlock').style.display = 'none';

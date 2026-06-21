@@ -34,9 +34,10 @@ NODE = Path("/usr/bin/node")
 OPENCLAW = Path("/usr/lib/node_modules/openclaw/openclaw.mjs")
 # Char-count tolerance band. The style guide targets 560-640 chars
 # (see reference-style-video.md, 抖音科普短片节奏更紧凑), but LLM output
-# is noisy — widened to 450-900.
+# is noisy — widened to 450-1200 to support long-form (200s 抖音科普对标
+# 大约 1080 字, 上限 1200 留余量).
 MIN_SCRIPT_CHARS = 450
-MAX_SCRIPT_CHARS = 900
+MAX_SCRIPT_CHARS = 1200
 DEFAULT_TARGET_SECONDS = 110
 # Empirically calibrated from MiniMax-TTS (model=speech-2.8-hd) Radio_Host:
 # 实测 628 字 / speed 1.15 → 112.9s (5.56 chars/sec), 644 字 → 110.1s (5.85)。
@@ -50,6 +51,68 @@ NARRATE_TRIGGER = SKILL_DIR / ".video-narrate-trigger"
 LAST_RUN_MARKER = SKILL_DIR / ".video-script-writer.lastrun"
 REFERENCE_STYLE = Path("/root/.openclaw/workspace/skills/video-studio/reference-style-video.md")
 LOG_FILE = Path("/var/log/video-studio/video-script-watcher.log")
+
+
+# ----- 对标 [行者道荣] 风格 prompt 内联 (来自 benchmarks/xingzhe/analysis.md §3+§6) -----
+# 20 篇真实稿子反推: 反问开场 70% + 段子化金句 + 12.9 数字/视频 + 数学对比 + 80% IP 签名
+GOOD_EXAMPLES = '''[好脚本示例 — 学结构, 不要死抄文字]
+
+示例 1 (反问 + 立即给答案, 核弹泰山 #1):
+"核弹能不能抹平一座山, 比如泰山。直接说答案, 不能。咱们往往会过于高估核弹的威力。小时候经常听说把地球上所有的核弹一起引爆就能毁灭地球好几次, 这个谣言属于是夏侯惇鉴宝——一眼假, 泰山听了都能把体内的岩浆笑尿出来。"
+→ 反问开场 + 立即给答案 + 段子化破折号金句
+
+示例 2 (假设 + 立即给答案, 琥珀防腐 #2):
+"既然琥珀里的昆虫万年不腐, 古人为什么不用琥珀来给尸体做防腐? 直接说答案, 因为琥珀它根本就不防腐, 里面的昆虫看上去栩栩如生, 而实际上内脏早就烂没了。"
+→ 假设开场 + 立即给答案 + 反常识判断
+
+示例 3 (反问 + 反问, 狼群牧羊犬 #6):
+"为什么狼群不敢攻击有牧羊犬保护的羊群? 难道狼群还打不过一条狗吗? 唉, 当然是因为牧羊犬有个终极技能叫做召唤恐怖直立猿, 单个恐怖直立猿, 狼群不怕的话, 就会刷新出持械恐怖直立猿。"
+→ 双反问开场 + 段子化比喻 (游戏机制)
+
+示例 4 (假设 + 反常识, 熬夜 #20):
+"如果每天都熬夜到 12 点之后再睡觉会怎样? 熬夜的后果想必大家都知道, 每熬夜六十秒就会少睡一分钟, 然而咱们打工人白天的时间并不属于自己, 到了晚上才有一点自己的时间。"
+→ 假设开场 + 数字反差 (60秒少1分钟) + 站位打工人
+'''
+
+HOOK_TEMPLATES = '''[开头 — 70% 反问开场, 选 1 个]
+
+1. 反问 + 立即给答案: "X 能不能 Y? 直接说答案, 因为 Z。"  (王者, 14/20)
+2. 反问 + 反问: "为什么 X? 难道 Y 吗?"
+3. 假设 + 立即给答案: "如果 X 会怎样? 直接说答案, 因为 Y。"
+4. 反常识: "你以为 X, 其实 Y。" (用得少, 易俗)
+5. 假设: "如果 X 会怎样? 攻读过 X 的兄弟们都知道, Y。"  (跟"咱们"叙述者配套)
+
+[中段钩子 — 每 10-15 秒一个]
+
+- 具体数字: "9.2 公里 / 50 公里 / 200 公里 / 14 万吨 / 5 千万吨"
+- 段子化破折号: "X——Y" (X反差 + Y降维) / "X, 属于是 Y"
+- 数学对比: "A 倍 / 提升 X 倍 / 差 30 倍 / 约等于 X"
+- 跨学科引用: 把科学/历史/游戏术语编织进同一段
+- 短句节奏: 单句 ≤20 字, 标点密集 (不超 22 字, 跟参考 style 一致)
+
+[结尾 — 80% IP 签名, 但本号可去掉]
+
+- 段子化金句再砸一次核心论点
+- (可选) "评论区 X" 唤起记忆/晒/站队
+- (可选) IP 签名 (本号暂不立 IP, 跳过)
+- ❌ 绝对不要: "以上就是..." / "希望对你有帮助" / "最后希望大家..." (治愈系)
+'''
+
+ANTI_PATTERNS = '''[必须避免 — 这些会让脚本"软"]
+
+❌ 抒情陈述开头: "凌晨两点, 灯还亮着" / "你有多久没..."  (v_40376759 反例)
+❌ 自我重复句式: "熬的不是夜, 是 X" / "你 X 的不是 Y, 是 Z" — 用了 2 次 = 没创意
+❌ 公众号爆款词堆砌: "KPI / 甲方 / 群消息 / 妈的视频号 / 房东的租约" — 5 个名词并排念是朗读
+❌ 烂大街金句: "早睡是奢侈品" / "成年人的世界没有容易二字" / "成年人的崩溃"
+❌ 治愈系结尾: "最后希望大家都能如愿..." / "希望对你有帮助"  (#20 反例)
+❌ 过度诗意: "把 X 揉进 Y 里" / "在 Z 里寻找 W" — 抒情挤压具体
+❌ 开放式问号结尾: "你怎么看?" / "你有什么感悟?" — 不可秒回
+❌ "治愈/安顿/松弛/温柔" 系 (被风格指南禁, 也会被读者反感)
+❌ 自我感动式反转: "原来 X 一直没变, 变的是 Y" — 鸡汤
+❌ 第一人称过多: "我" 连续出现 3+ 次 — 用"咱们/你"代
+❌ "今天我们来聊聊" / "大家好我是 X" — 自我介绍式开头
+❌ "首先/其次/最后/综上所述" — 论文结构词
+'''
 
 
 def log(msg):
@@ -105,23 +168,44 @@ def build_prompt(job):
     min_chars = max(MIN_SCRIPT_CHARS, target_chars - 65)
     max_chars = min(MAX_SCRIPT_CHARS, target_chars + 15)
     return (
-        f"为 video-studio Web 项目写一段约 {target_seconds} 秒的短视频旁白稿。主题：{theme}\n\n"
-        f"先读并严格遵守：{ref_relpath}\n"
-        "（如果该文件不存在，按'开头冲突 / 场景 / 核心判断前 3 段，结尾带互动钩子，中间短句节奏'写）\n\n"
-        "要求：\n"
-        f"1. 严格控制在 {min_chars}-{max_chars} 中文字，目标约 {target_chars} 字\n"
-        "2. 纯文本输出, 不要 markdown / 编号 / 标题 / 空行分隔\n"
-        "3. 开头 60-90 字内必须出现冲突 / 场景 / 核心判断\n"
-        "4. 结尾带互动 / 站队 / 转发钩子\n"
-        f"5. 文稿写入 skills/video-studio/runs/{job_id}/script.txt\n"
-        f"6. 更新 jobs/video/{job_id}.json: status=\"ready_script\", script=<全文>, script_meta={{char_count, target_seconds, actual_seconds=null}}, error=null\n"
-        f"7. job_id={job_id}\n\n"
-        "执行纪律：\n"
-        "- **首次写入即终稿**: 不要反复自我检查 / 改写 / 重写。最多 3 次写入, 第一次写完直接落盘。\n"
-        "- 不要把全文写在 thinking 或最终回复里, 必须用文件写入工具落盘\n"
+        f"为 video-studio Web 项目写一段约 {target_seconds} 秒 ({target_chars} 字) 的短视频旁白稿。\n"
+        f"主题：{theme}\n\n"
+        f"## 参考风格\n"
+        f"先读 {ref_relpath} (如果存在, 作为扩展参考)。\n"
+        f"本项目内已基于 20 篇对标稿子反推出具体规则, 见下文。\n\n"
+
+        f"## 好脚本示例 (4 条锚点 — 学结构, 不要死抄)\n"
+        f"{GOOD_EXAMPLES}\n\n"
+
+        f"## 钩子模板 (开头 + 中段 + 结尾, 选 1-2 个组合, 不要堆砌)\n"
+        f"{HOOK_TEMPLATES}\n\n"
+
+        f"## 必须避免 (会让脚本软)\n"
+        f"{ANTI_PATTERNS}\n\n"
+
+        f"## 硬约束 (优先级最高)\n"
+        f"1. 字数硬上限 {max_chars} 字, 目标 {target_chars} 字. **超过 1500 字直接判失败**, 不要尝试写 3000+ 字长稿\n"
+        f"2. 纯文本输出, 不要 markdown / 编号 / 标题 / 空行分隔\n"
+        f"3. 开头 60-90 字内必须出现: 反问 + 立即给答案 / 假设 + 给答案 / 反常识判断 (三选一)\n"
+        f"4. 中段每 10-15 秒一个钩子: 具体数字 / 段子化破折号 / 数学对比 / 跨学科引用 (四选一)\n"
+        f"5. 数字密度: >= {int(target_chars/100)} 个数字 (含中文) 在全文, 数学对比 >=2 个 (A 倍 / 约等于)\n"
+        f"6. 反转密度: 但是/其实/真相是/实际上 类词 >=3 个\n"
+        f"7. 结尾禁止: 开放式问号 / 治愈系 / 以上就是... / 希望对你有帮助\n"
+        f"8. 写完自检: 5 个连续名词并排? 同一句式用了 2 次? 有治愈/松弛/温柔吗? 字数是否在 {min_chars}-{max_chars} 区间? 任何一项不通过就重写\n"
+        f"9. 不要尝试用 N 段完整 4 层结构堆长度, 一段层只算一个反转, 4 层反转 + 中间段子 = 600-800 字就够\n\n"
+
+        f"## 执行\n"
+        f"1. 写入 skills/video-studio/runs/{job_id}/script.txt\n"
+        f"2. 更新 jobs/video/{job_id}.json: status=\"ready_script\", script=<全文>, "
+        f"script_meta={{char_count, target_seconds, actual_seconds=null}}, error=null\n"
+        f"3. job_id={job_id}\n\n"
+
+        f"## 纪律\n"
+        f"- 首次写入即终稿, 不要反复自我检查 / 改写 / 重写\n"
+        f"- 不要把全文写在 thinking 或最终回复里, 必须用文件写入工具落盘\n"
         f"- 文稿字数 < {MIN_SCRIPT_CHARS} 或 > {MAX_SCRIPT_CHARS} 视为失败\n"
-        "- 不要生成音频, 不要发布, 不要给用户发消息\n"
-        "- 最终回复只允许一句话: '已写入 <路径>'"
+        f"- 不要生成音频, 不要发布, 不要给用户发消息\n"
+        f"- 最终回复只允许一句话: '已写入 <路径>'"
     )
 
 
