@@ -382,6 +382,36 @@ def test_v71_quan_ta_orphan_verb():
     )
 
 
+def test_v8_hard_cut_no_orphan_tail_char():
+    # v8: alignment-merged super-sentence (4 commas → 63 chars) triggers
+    # hard-cut fallback because soft range [first_safe=21, hard_max=20) is
+    # empty. v7's back-up loop stopped at end=17 (CJK-CJK boundary,
+    # back_limit reached) producing "...,忍了,这 | 一忍..." where "这"
+    # orphaned on the head. v8 backs up further to the nearest PUNCT/space
+    # so the cut sits on punctuation: "...,忍了, | 这一忍..." — no orphan.
+    text = "一个能秒掉整个朝代的神仙,忍了,这一忍就是整整28年,中间隔了2次封神、3次朝堂清洗、5次人间王朝更替,你就知道这克制有多深。"
+    subs = rv._split_sentence_into_subs(text, max_chars=20, hard_max=20)
+    assert len(subs) >= 2, f"expected ≥2 subs, got {subs!r}"
+    # First sub ends on a PUNCT (comma) — "这" must not orphan on its tail.
+    assert subs[0].rstrip()[-1] in "。！？，；：、,?!", (
+        f"sub-0 ends with bare char {subs[0].rstrip()[-1]!r} → orphan: {subs[0]!r}"
+    )
+    # Second sub must START with the head word of the next phrase, not a
+    # fragment stranded from the previous sub.
+    assert subs[1].lstrip()[:2] == "这一", (
+        f"sub-1 should start with '这一' but got {subs[1]!r}"
+    )
+    # Wrapped lines must each be readable.
+    for j, sub in enumerate(subs):
+        display = rv._strip_punctuation(sub)
+        if not display:
+            continue
+        lines = rv.wrap_caption_lines(display, max_chars=20, max_lines=2)
+        assert len(lines) == 1, (
+            f"sub-{j} wraps to {len(lines)} lines: {sub!r} → {lines!r}"
+        )
+
+
 def main():
     tests = [
         test_basic_chinese_short,
@@ -409,6 +439,7 @@ def main():
         test_v7_coffee_melatonin_dense_cjk_digits,
         test_v7_v6_not_regressed,
         test_v71_quan_ta_orphan_verb,
+        test_v8_hard_cut_no_orphan_tail_char,
     ]
     passed = 0
     failed = 0
