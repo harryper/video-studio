@@ -44,7 +44,31 @@ DEFAULT_TARGET_SECONDS = 110
 # 实测 628 字 / speed 1.15 → 112.9s (5.56 chars/sec), 644 字 → 110.1s (5.85)。
 # 中文 TTS 实际节奏受标点/换气影响大；为了不过分欠长，多留 4% 余量。
 ESTIMATED_CHARS_PER_SECOND = 5.4
+# LLM 输出密度 vs TTS 读速: 实测 LLM 自然产出 ~5 chars/sec (300s 视频
+# 产出 1515 字, 5.05 chars/sec)，跟 TTS 速率接近。所以 prompt target + 长度
+# 校验都直接用 ESTIMATED_CHARS_PER_SECOND 算 (不再单独定义 LLM rate)。
 DRIFT_SAFETY_SECONDS = 5
+
+
+def script_length_bounds(duration_sec: int) -> tuple[int, int]:
+    """Duration-aware script char budget: (min_chars, max_chars).
+
+    Replaces the old hardcoded 300-1200 cap. Long videos need proportionally
+    more script (300s → 1620 字 target, accepted 1134-2206), and short
+    videos get a 300-char floor so a 60s demo isn't forced to write 0.
+
+    Floor: MIN_SCRIPT_CHARS=300 for short videos (target < ~430 chars);
+    for longer videos, min scales to 70% of target so a 300s video must
+    have ≥ 1134 字 to fill the runtime. Cap: 130% of target + 100-char
+    buffer for LLM noise.
+    """
+    target = int(duration_sec * ESTIMATED_CHARS_PER_SECOND)
+    if target >= 430:
+        min_chars = int(target * 0.7)
+    else:
+        min_chars = MIN_SCRIPT_CHARS
+    max_chars = int(target * 1.3) + 100
+    return min_chars, max_chars
 
 SCRIPT_TRIGGER = SKILL_DIR / ".video-script-trigger"
 RENDER_TRIGGER = SKILL_DIR / ".video-render-trigger"
@@ -165,9 +189,8 @@ def build_prompt(job):
     ref_path = REFERENCE_STYLE
     ref_relpath = str(ref_path.relative_to(WORKSPACE_DIR)) if ref_path.exists() else "(reference-style-video.md missing)"
     target_seconds = int(job.get("render", {}).get("duration_sec") or DEFAULT_TARGET_SECONDS)
-    target_chars = round(target_seconds * ESTIMATED_CHARS_PER_SECOND)
-    min_chars = max(MIN_SCRIPT_CHARS, target_chars - 65)
-    max_chars = min(MAX_SCRIPT_CHARS, target_chars + 15)
+    min_chars, max_chars = script_length_bounds(target_seconds)
+    target_chars = int(target_seconds * ESTIMATED_CHARS_PER_SECOND)
     return (
         f"为 video-studio Web 项目写一段约 {target_seconds} 秒 ({target_chars} 字) 的短视频旁白稿。\n"
         f"主题：{theme}\n\n"
@@ -204,7 +227,7 @@ def build_prompt(job):
         f"## 纪律\n"
         f"- 首次写入即终稿, 不要反复自我检查 / 改写 / 重写\n"
         f"- 不要把全文写在 thinking 或最终回复里, 必须用文件写入工具落盘\n"
-        f"- 文稿字数 < {MIN_SCRIPT_CHARS} 或 > {MAX_SCRIPT_CHARS} 视为失败\n"
+        f"- 文稿字数应符合动态区间: {min_chars}-{max_chars} 字 (基于 {target_seconds}s 目标时长)\n"
         f"- 不要生成音频, 不要发布, 不要给用户发消息\n"
         f"- 最终回复只允许一句话: '已写入 <路径>'"
     )
@@ -330,10 +353,15 @@ def finalize_from_script_file(job):
     script = script_path.read_text(encoding="utf-8").strip()
     if not script:
         return False
-    # preview_only: accept shorter scripts (10s demo scripts can be <450 chars)
+    # preview_only: accept shorter scripts (10s demo scripts can be <50 chars)
     is_preview = bool((job.get("render") or {}).get("preview_only", False))
-    min_chars = 50 if is_preview else MIN_SCRIPT_CHARS
-    if len(script) < min_chars or len(script) > MAX_SCRIPT_CHARS:
+    if is_preview:
+        min_chars = 50
+        max_chars = max(MAX_SCRIPT_CHARS, int((job.get("render") or {}).get("duration_sec", 10) * ESTIMATED_CHARS_PER_SECOND * 1.3) + 100)
+    else:
+        target_seconds = int((job.get("render") or {}).get("duration_sec") or DEFAULT_TARGET_SECONDS)
+        min_chars, max_chars = script_length_bounds(target_seconds)
+    if len(script) < min_chars or len(script) > max_chars:
         return False
     # RC2/RC5: prefer the rate measured by the last few final jobs (narrate
     # daemon writes script_meta.actual_rate = voice_seconds/char_count, i.e.
@@ -431,14 +459,19 @@ def process_one(job):
         return False
 
     if updated.get("status") == "ready_script" and (updated.get("script") or "").strip():
-        # preview_only: skip the 450-char minimum (10s demo scripts are short)
+        # preview_only: skip the duration-aware minimum (10s demo scripts are short)
         is_preview = bool((updated.get("render") or {}).get("preview_only", False))
-        min_chars = 50 if is_preview else MIN_SCRIPT_CHARS
-        if not min_chars <= len(updated["script"]) <= MAX_SCRIPT_CHARS:
+        if is_preview:
+            min_chars = 50
+            max_chars = max(MAX_SCRIPT_CHARS, int((updated.get("render") or {}).get("duration_sec", 10) * ESTIMATED_CHARS_PER_SECOND * 1.3) + 100)
+        else:
+            target_seconds = int((updated.get("render") or {}).get("duration_sec") or DEFAULT_TARGET_SECONDS)
+            min_chars, max_chars = script_length_bounds(target_seconds)
+        if not min_chars <= len(updated["script"]) <= max_chars:
             updated["status"] = "error"
             updated["error"] = (
                 f"script length {len(updated['script'])} outside "
-                f"{min_chars}-{MAX_SCRIPT_CHARS} chars"
+                f"{min_chars}-{max_chars} chars"
             )
             save_job(updated)
             log(f"{job['id']} failed length check: {len(updated['script'])} (preview={is_preview})")
