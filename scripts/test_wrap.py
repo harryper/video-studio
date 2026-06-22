@@ -258,6 +258,22 @@ def test_v9_strict_punct_split():
     assert actual == expected, f"got {actual!r}, expected {expected!r}"
 
 
+def test_v9_single_clause_no_punct_stays_whole():
+    # v9: a 26-char sentence with no _SPLIT_PUNCT boundary (`/` and decimal
+    # `.` are NOT in `_SPLIT_PUNCT`) must stay whole as one sub, even though
+    # it exceeds max_chars=20. The user reported this exact sentence being
+    # fragmented mid-clause at `的` particle, breaking readability.
+    # Downstream wrap_caption_lines handles the multi-line display.
+    text = "7 年内的死亡率比继续参与工作的/组高出 2.3 倍"
+    assert len(text) > 20, f"setup: text must exceed max_chars=20, got {len(text)}"
+    subs = rv._split_sentence_into_subs(text, max_chars=20, hard_max=30)
+    assert len(subs) == 1, (
+        f"single-clause sentence must stay whole, got {len(subs)} subs: {subs!r}"
+    )
+    assert subs[0] == text, f"sub content drifted: {subs[0]!r} vs {text!r}"
+    print("✓ single-clause sentence (no _SPLIT_PUNCT) stays whole")
+
+
 def main():
     tests = [
         test_basic_chinese_short,
@@ -279,6 +295,7 @@ def main():
         test_v3_21char_balanced_split,
         test_v3_18char_single_line,
         test_v9_strict_punct_split,
+        test_v9_single_clause_no_punct_stays_whole,
     ]
     passed = 0
     failed = 0

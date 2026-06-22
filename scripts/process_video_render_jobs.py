@@ -795,8 +795,8 @@ def _split_sentence_into_subs(text: str, max_chars: int, hard_max: int) -> list[
 
     The user wants strict per-punctuation splitting regardless of sub
     length: each `,` `、` `。` etc. boundary becomes its own sub-caption.
-    Downstream `wrap_caption_lines(max_chars=20, max_lines=2)` handles
-    internal multi-line wrap if any single clause exceeds 20 chars.
+    Downstream `wrap_caption_lines(max_chars=28, max_lines=1)` enforces
+    single-line display (16:9); 9:16 uses 16. Overflow shows "…" truncation.
 
     Single clauses that exceed max_chars (no PUNCT inside, e.g. dense
     "中间隔了2次封神、3次朝堂清洗、5次人间王朝更替" 27 chars between
@@ -805,8 +805,20 @@ def _split_sentence_into_subs(text: str, max_chars: int, hard_max: int) -> list[
 
     Short sentences (≤ max_chars) stay whole — even if they have internal
     PUNCT, no need to fragment a 12-char "你劝年轻人早睡," into two subs.
+
+    Single-clause sentences with no _SPLIT_PUNCT boundary (e.g. dense
+    "7 年内的死亡率比继续参与工作的/组高出 2.3 倍" — `/` and decimal `.`
+    are NOT in _SPLIT_PUNCT) also stay whole regardless of length. Downstream
+    wrap_caption_lines handles multi-line display. Fragmenting a single
+    semantically-complete clause at PARTICLE positions like 的/了 produces
+    worse subtitles than letting it render as 2 lines.
     """
     if len(text) <= max_chars:
+        return [text]
+
+    # Single-clause (no PUNCT boundary) → keep whole. v9's principle is
+    # "one sub per clause"; a clause without boundaries is one clause.
+    if not any(ch in _SPLIT_PUNCT for ch in text):
         return [text]
 
     # 1. Greedy split at every PUNCT char. Each clause includes its
@@ -1005,7 +1017,7 @@ def _load_alignment_subtimes(job_id, scene_times, chunks, width=DEFAULT_WIDTH, h
     # splitting at the 3rd comma giving a 22-char head that wrapped to
     # 2 visual lines; with hard_max=20 we hard-cut at 20 so every sub-chunk
     # is guaranteed to display ≤ max_chars — never 2 visual lines).
-    max_chars = 20 if width >= height else 12
+    max_chars = 28 if width >= height else 16
     hard_max = max_chars
     MIN_SUB_DUR = 0.3  # floor: a sub-caption must stay on screen >=300ms
     SUB_GAP = 0.04     # visual gap between consecutive sub-captions
@@ -1079,7 +1091,7 @@ def _load_alignment_subtimes(job_id, scene_times, chunks, width=DEFAULT_WIDTH, h
                     if not display_text:
                         cursor_in_sent += len(sub_text)
                         continue
-                    lines = wrap_caption_lines(display_text, max_chars=20, max_lines=2)
+                    lines = wrap_caption_lines(display_text, max_chars=max_chars, max_lines=1)
                     scene_subs.append((lines, slot_start, slot_end))
                     cursor_in_sent += len(sub_text)
         else:
@@ -1109,7 +1121,7 @@ def _load_alignment_subtimes(job_id, scene_times, chunks, width=DEFAULT_WIDTH, h
                     sent_a, sent_b = sent_spans[j]
                     stripped = _strip_punctuation(sent_text_j)
                     if stripped:
-                        lines = wrap_caption_lines(stripped, max_chars=20, max_lines=2)
+                        lines = wrap_caption_lines(stripped, max_chars=max_chars, max_lines=1)
                         scene_subs.append((lines, sent_a, sent_b))
                     continue
                 # Now walk forward through script_chars, matching sent_text_j
@@ -1128,7 +1140,7 @@ def _load_alignment_subtimes(job_id, scene_times, chunks, width=DEFAULT_WIDTH, h
                     sent_a, sent_b = sent_spans[j]
                     stripped = _strip_punctuation(sent_text_j)
                     if stripped:
-                        lines = wrap_caption_lines(stripped, max_chars=20, max_lines=2)
+                        lines = wrap_caption_lines(stripped, max_chars=max_chars, max_lines=1)
                         scene_subs.append((lines, sent_a, sent_b))
                     cursor_char_idx = sent_end_idx
                     continue
@@ -1183,8 +1195,8 @@ def _load_alignment_subtimes(job_id, scene_times, chunks, width=DEFAULT_WIDTH, h
                         # correctly.
                         cursor_in_sent += len(sub_text)
                         continue
-                    # Word-aware 多行 wrap (1-2 行, max 20 字/行) — 用项目已有的 _pack_lines 工具
-                    lines = wrap_caption_lines(display_text, max_chars=20, max_lines=2)
+                    # Word-aware 单行 wrap (max 20 字/行) — 用项目已有的 _pack_lines 工具
+                    lines = wrap_caption_lines(display_text, max_chars=max_chars, max_lines=1)
                     scene_subs.append((lines, slot_start, slot_end))
                     cursor_in_sent += len(sub_text)
                 cursor_char_idx = sent_end_idx
