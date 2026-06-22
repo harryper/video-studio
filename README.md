@@ -146,7 +146,7 @@ sudo systemctl enable --now \
 
 ```bash
 python3 scripts/test_align.py              # 小数点合并：         9/9
-python3 scripts/test_wrap.py               # 字幕折行 + v9 split：27/27
+python3 scripts/test_wrap.py               # 字幕折行 + v9 split：19/19
 python3 scripts/test_alignment_subtimes.py # _load_alignment_subtimes： 3/3
 python3 scripts/test_html_output.py
 ```
