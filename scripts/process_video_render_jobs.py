@@ -42,6 +42,8 @@ UPLOAD_SCRIPT = SKILL_DIR / "scripts" / "upload_to_oss.py"
 IMAGE_GEN_SCRIPT = SKILL_DIR / "scripts" / "minimax_image_gen.py"
 PEXELS_IMAGE_SCRIPT = SKILL_DIR / "scripts" / "pexels_image.py"
 PEXELS_VIDEO_SCRIPT = SKILL_DIR / "scripts" / "pexels_video.py"
+PIXABAY_IMAGE_SCRIPT = SKILL_DIR / "scripts" / "pixabay_image.py"
+PIXABAY_VIDEO_SCRIPT = SKILL_DIR / "scripts" / "pixabay_video.py"
 
 DEFAULT_WIDTH = 1920
 DEFAULT_HEIGHT = 1080
@@ -252,9 +254,10 @@ def render_placeholder(
             video_path = videos_dir / f"scene_{i+1}.mp4"
             if (
                 (video_path.exists() and video_path.stat().st_size > 100_000)
+                or try_pixabay_video(base_query, video_path, width, height, offset=offset)
                 or try_pexels_video(base_query, video_path, width, height, offset=offset)
             ):
-                log(f"  scene {i+1}: pexels video (q={base_query!r}, offset={offset})")
+                log(f"  scene {i+1}: stock video (q={base_query!r}, offset={offset})")
                 media_items.append(("video", video_path))
                 continue
         img_path = images_dir / f"scene_{i+1}.jpg"
@@ -264,18 +267,22 @@ def render_placeholder(
             log(f"  scene {i+1}: cached")
             media_items.append(("image", img_path))
             continue
-        # 1. Try Pexels (带 offset 避免每次都拿第一张)
-        if not skip_pexels and try_pexels_image(
-            base_query, img_path, width=width, height=height, offset=offset
+        # 1. Try Pixabay (主源) → Pexels (备)
+        if not skip_pexels and (
+            try_pixabay_image(base_query, img_path, width=width, height=height, offset=offset)
+            or try_pexels_image(base_query, img_path, width=width, height=height, offset=offset)
         ):
-            log(f"  scene {i+1}: pexels (q={base_query!r}, offset={offset})")
+            log(f"  scene {i+1}: stock (q={base_query!r}, offset={offset})")
             media_items.append(("image", img_path))
             continue
-        # 1b. spec 缺失时，再试 chunk 原文本（中文 Pexels 兜底）
+        # 1b. spec 缺失时，再试 chunk 原文本（中文 stock 兜底）
         if not (spec and spec.get("subject")) and not skip_pexels:
             fallback_q = extract_pexels_query(chunk, theme, i)
-            if try_pexels_image(fallback_q, img_path, width=width, height=height, offset=offset):
-                log(f"  scene {i+1}: pexels fallback (q={fallback_q!r})")
+            if (
+                try_pixabay_image(fallback_q, img_path, width=width, height=height, offset=offset)
+                or try_pexels_image(fallback_q, img_path, width=width, height=height, offset=offset)
+            ):
+                log(f"  scene {i+1}: stock fallback (q={fallback_q!r})")
                 media_items.append(("image", img_path))
                 continue
         # 2. MiniMax (Pexels 跳过时,这里是主路径;否则是 Pexels miss 后的兜底)
@@ -414,6 +421,49 @@ def try_pexels_image(query, out_path, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT
     try:
         result = subprocess.run(
             ["python3", str(PEXELS_IMAGE_SCRIPT),
+             "--query", query,
+             "--out", str(out_path),
+             "--w", str(width), "--h", str(height),
+             "--per-page", "3", "--offset", str(offset)],
+            capture_output=True, text=True, timeout=timeout,
+        )
+        if result.returncode == 0 and out_path.exists() and out_path.stat().st_size > 5000:
+            return True
+        return False
+    except Exception:
+        return False
+
+
+def try_pixabay_video(query, out_path, width, height, timeout=120, offset=0):
+    """Try to fetch a Pixabay video clip. Returns True on success."""
+    try:
+        result = subprocess.run(
+            [
+                "python3", str(PIXABAY_VIDEO_SCRIPT),
+                "--query", query,
+                "--out", str(out_path),
+                "--w", str(width),
+                "--h", str(height),
+                "--offset", str(offset),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+        return (
+            result.returncode == 0
+            and out_path.exists()
+            and out_path.stat().st_size > 100_000
+        )
+    except Exception:
+        return False
+
+
+def try_pixabay_image(query, out_path, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT, timeout=30, offset=0):
+    """Try to fetch a Pixabay image. Returns True on success."""
+    try:
+        result = subprocess.run(
+            ["python3", str(PIXABAY_IMAGE_SCRIPT),
              "--query", query,
              "--out", str(out_path),
              "--w", str(width), "--h", str(height),
