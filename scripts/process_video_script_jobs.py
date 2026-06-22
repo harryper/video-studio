@@ -34,9 +34,10 @@ NODE = Path("/usr/bin/node")
 OPENCLAW = Path("/usr/lib/node_modules/openclaw/openclaw.mjs")
 # Char-count tolerance band. The style guide targets 560-640 chars
 # (see reference-style-video.md, 抖音科普短片节奏更紧凑), but LLM output
-# is noisy — widened to 450-1200 to support long-form (200s 抖音科普对标
-# 大约 1080 字, 上限 1200 留余量).
-MIN_SCRIPT_CHARS = 450
+# is noisy — widened to 300-1200 to support both short-form (300+ chars
+# e.g. 抖音小知识/科普短文案) and long-form (200s 抖音科普对标大约
+# 1080 字, 上限 1200 留余量).
+MIN_SCRIPT_CHARS = 300
 MAX_SCRIPT_CHARS = 1200
 DEFAULT_TARGET_SECONDS = 110
 # Empirically calibrated from MiniMax-TTS (model=speech-2.8-hd) Radio_Host:

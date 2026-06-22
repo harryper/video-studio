@@ -401,6 +401,25 @@ def trigger_video_narrate(job_id):
     return jsonify({'ok': True, 'job': job_response(job)})
 
 
+@app.route('/api/jobs/<job_id>/script', methods=['POST'])
+def trigger_video_script(job_id):
+    """重跑脚本：状态回到 pending（script 守护进程只拣 pending 状态的 job），
+    清空 error，唤醒 script 守护进程。
+
+    守护进程会再调一次 LLM agent 跑新脚本（或复用已写的 script.txt 走
+    finalize_from_script_file 兜底），然后用最新的 MIN_SCRIPT_CHARS 重新校验。
+    """
+    job = load_job(job_id)
+    if not job or job.get('mode') != 'video':
+        return jsonify({'error': 'video job not found'}), 404
+    job['status'] = 'pending'
+    job['error'] = None
+    job.setdefault('logs', []).append(f'{_now_iso()} script re-triggered')
+    save_job(job)
+    _touch_video_trigger('script')
+    return jsonify({'ok': True, 'job': job_response(job)})
+
+
 @app.route('/__internal/touch-trigger', methods=['POST'])
 def internal_touch_trigger():
     """内部端点，供守护进程或外部触发器调用。Body: {"trigger": "script"|"render"|"narrate"}"""

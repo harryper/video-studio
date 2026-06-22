@@ -741,30 +741,72 @@ _SPLIT_COMMON_WORDS = (
 
 
 def _split_sentence_into_subs(text: str, max_chars: int, hard_max: int) -> list[str]:
-    """Split a sentence into sub-caption chunks at semantic boundaries.
+    """v9: split at every _SPLIT_PUNCT boundary (one sub per clause).
 
-    Order of preference for split points:
-      1. Right after full-width punctuation 。！？，；：、(priority 0)
-      2. Right after particles 的/了/着/过/啊/吧/呢/嘛/呀 (priority 1)
-      3. Right before pronouns 我/你/他/她/它/们 (priority 2)
-      4. Last resort: back up before common 2-3 char words like 自己/百分之/九十
+    The user wants strict per-punctuation splitting regardless of sub
+    length: each `,` `、` `。` etc. boundary becomes its own sub-caption.
+    Downstream `wrap_caption_lines(max_chars=20, max_lines=2)` handles
+    internal multi-line wrap if any single clause exceeds 20 chars.
 
-    Head must be ≥ first_safe (= max(4, len(text)//3)); tail must be ≥ 3.
-    Short sentences (≤ max_chars) stay whole. Sentences with no good split
-    point and length ≤ hard_max also stay whole — let TTS natural pace
-    handle the timing, don't fragment.
+    Single clauses that exceed max_chars (no PUNCT inside, e.g. dense
+    "中间隔了2次封神、3次朝堂清洗、5次人间王朝更替" 27 chars between
+    outer commas) fall through to `_split_long_clause` (the v7-v8.1
+    length-based candidate scan + hard-cut) for that clause.
+
+    Short sentences (≤ max_chars) stay whole — even if they have internal
+    PUNCT, no need to fragment a 12-char "你劝年轻人早睡," into two subs.
     """
     if len(text) <= max_chars:
         return [text]
+
+    # 1. Greedy split at every PUNCT char. Each clause includes its
+    # trailing PUNCT so wrap can strip it for display but it stays in
+    # the raw sub for alignment.json char-index lookup.
+    clauses: list[str] = []
+    buf = ""
+    for ch in text:
+        buf += ch
+        if ch in _SPLIT_PUNCT:
+            clauses.append(buf)
+            buf = ""
+    if buf:
+        clauses.append(buf)
+
+    # 2. Each clause is its own sub. When we hit a clause > max_chars
+    # (e.g. "一片褪黑素30块催眠6小时——清醒1小时成本只有睡眠的1/3,"
+    # 31 chars between outer commas), delegate the rest of the clause
+    # stream to `_split_long_clause` (the v7-v8.1 length-based splitter).
+    # `_split_long_clause` is PUNCT-aware (range_kind_hard accepts PUNCT
+    # past hard_max), so it can cut at `1/3,` etc. inside the over-long
+    # clause. We DON'T re-process the remaining clauses in this loop
+    # — `_split_long_clause` already absorbed their text into its output.
+    out: list[str] = []
+    for j, clause in enumerate(clauses):
+        stripped = clause.strip()
+        if not stripped:
+            continue
+        if len(stripped) > max_chars:
+            # Hand the rest of the clause stream to _split_long_clause.
+            # It scans for internal PUNCT (range_kind_hard) and falls
+            # back to PARTICLE/PRONOUN + mid-CJK hard-cut.
+            remaining = "".join(clauses[j:])
+            out.extend(_split_long_clause(remaining, max_chars, hard_max))
+            return out
+        out.append(clause)
+    return out
+
+
+def _split_long_clause(text: str, max_chars: int, hard_max: int) -> list[str]:
+    """v7-v8.1 length-based split: used when a PUNCT-delimited clause is
+    still over max_chars (e.g. dense "中间隔了2次封神、3次朝堂清洗、5次
+    人间王朝更替" 27 chars with internal `、` PUNCT but no outer boundary
+    below max_chars). Falls through to PARTICLE/PRONOUN candidate scan,
+    then mid-CJK hard-cut with back-up to nearest PUNCT/space.
+    """
     first_safe = max(4, len(text) // 3)
-    # Search range is [first_safe, hard_max) for normal sentences.
-    # For sentences > 2*hard_max, also accept punctuation split points
-    # in [hard_max, len(text)-3) — only used if the soft range finds
-    # nothing acceptable (so long sentences still split somewhere
-    # reasonable instead of hard-cutting at hard_max).
-    candidates: list[tuple[int, int, int]] = []  # (priority, end_index, range_kind)
-    range_kind_soft = 0  # within [first_safe, hard_max)
-    range_kind_hard = 1  # beyond hard_max (only PUNCT, fallback only)
+    candidates: list[tuple[int, int, int]] = []
+    range_kind_soft = 0
+    range_kind_hard = 1
     allow_hard = len(text) > 2 * hard_max
     for i in range(first_safe, len(text) - 3 if allow_hard else min(len(text), hard_max)):
         prev_ch = text[i - 1] if i > 0 else ""
@@ -776,14 +818,6 @@ def _split_sentence_into_subs(text: str, max_chars: int, hard_max: int) -> list[
             candidates.append((1, i, range_kind_soft))
         elif next_ch in _SPLIT_PRONOUNS and i + 1 < len(text) and in_soft:
             candidates.append((2, i, range_kind_soft))
-    # v7.1: if soft range has NO PUNCT candidate (only PARTICLE/PRONOUN),
-    # also scan just before first_safe for a PUNCT that the soft range
-    # missed. Example: "你劝年轻人早睡,等于劝他放弃一天..." has a PUNCT
-    # at i=8 (the comma after 早睡) but first_safe=10 skips it. Without
-    # this, the only candidate is the PRONOUN split at i=11 which leaves
-    # "等于劝" orphaned on the head. Tag these as range_kind_soft too
-    # since they're punctuation — the tie-breaker (prio=0) will still
-    # prefer them over any PARTICLE/PRONOUN.
     has_punct_soft = any(rk == range_kind_soft and p == 0 for p, _, rk in candidates)
     if not has_punct_soft:
         early_limit = max(4, first_safe - 4)
@@ -792,59 +826,20 @@ def _split_sentence_into_subs(text: str, max_chars: int, hard_max: int) -> list[
             if prev_ch in _SPLIT_PUNCT:
                 candidates.append((0, i, range_kind_soft))
     if candidates:
-        # Tie-breaker key (lower wins):
-        #   (rk, prio, head_penalty, balance_diff, range_excess)
-        #
-        # rk: soft range (0) wins over hard range (1).
-        # prio: PUNCT (0) > PARTICLES (1) > PRONOUNS (2).
-        # head_penalty: 0 if head ≤ max_chars; otherwise 10x over.
-        # balance_diff: |max(head,tail) - max_chars/2|.
-        # range_excess: how far past hard_max the cut is (prefer earlier).
-        #
-        # Tail policy: prefer tail ≤ max_chars (each sub fits on screen).
-        # If no candidate has tail ≤ max_chars, accept tail ≤ hard_max
-        # with a strong penalty so we still find a cut somewhere.
-        best = None  # (key_tuple, end)
+        best = None
         for prio, end, rk in candidates:
             tail_len = len(text) - end
-            # Reject very short tails. 3-char tails like "购买力" orphan a
-            # meaningful noun from its modifier (e.g. "被房贷偷走的购买力"
-            # → "被房贷偷走的" / "购买力" reads as two fragments, not a
-            # phrase). Bumping the min to 5 forces the algorithm to look
-            # for a better split point (or fall through to the no-split
-            # path, letting wrap handle the 21-char sentence via midpoint
-            # cut at a comma).
             if tail_len < 5:
                 continue
             head_len = end
-            # Skip candidates whose head is unreasonably long for this
-            # sentence (> 2*hard_max) — those would create a single huge
-            # sub-caption. Recursion handles the rest.
             if head_len > 2 * hard_max:
                 continue
-            # v6: reject any candidate whose head would wrap to 2 visual
-            # lines. Strip preserves char count (comma → space, same len),
-            # so head_len > max_chars guarantees a 2-line display. The
-            # algorithm must fall through to hard-cut at max_chars so each
-            # produced sub-chunk is ≤ max_chars.
             if head_len > max_chars:
                 continue
-            # v7.1: don't reject tail>hard_max outright — penalize instead.
-            # PUNCT splits with long tails (will be recursively split) are
-            # still better than accepting a PRONOUN split that orphans a
-            # character on the head. The recursion in the post-loop block
-            # handles long tails cleanly.
             head_penalty = 0 if head_len <= max_chars else (head_len - max_chars) * 10
             balance_diff = abs(max(head_len, tail_len) - max_chars / 2)
             tail_penalty = 0 if tail_len <= max_chars else (tail_len - max_chars) * 5
             range_excess = max(0, end - hard_max) if rk == range_kind_hard else 0
-            # v7.1: prefer cuts where the head ends on punctuation/space
-            # over cuts that leave a bare character dangling. The PRONOUN
-            # rule can land on "等于劝|他放弃" → head ends in "劝" (orphan).
-            # A PUNCT cut at "等于劝," (i=10) isn't in the soft range when
-            # first_safe > 10, so we add a strong penalty for orphan-tails
-            # to push the algorithm toward recursing into the longer head
-            # rather than accepting the pronoun split.
             tail_char = text[end - 1] if end > 0 else ""
             head_orphan_penalty = 0 if (tail_char in _SPLIT_PUNCT or tail_char == " ") else 5
             key = (rk, prio, head_penalty, balance_diff, tail_penalty, range_excess, head_orphan_penalty)
@@ -853,41 +848,14 @@ def _split_sentence_into_subs(text: str, max_chars: int, hard_max: int) -> list[
         if best is not None:
             tail = text[best[1]:]
             if len(tail) > max_chars:
-                # Tail is longer than max_chars — recurse to split it
-                # further (caller can't see this without recursion).
-                return [text[:best[1]], *_split_sentence_into_subs(tail, max_chars, hard_max)]
+                # Recurse with `_split_long_clause` (not `_split_sentence_
+                # into_subs`) — v9's greedy PUNCT split would re-enter
+                # the same long clause and risk infinite ping-pong.
+                return [text[:best[1]], *_split_long_clause(tail, max_chars, hard_max)]
             return [text[:best[1]], text[best[1]:]]
-    # No semantic split point fits — keep whole if under hard_max.
     if len(text) <= hard_max:
         return [text]
-    # Text exceeds hard_max — hard-cut, but back up to avoid splitting a
-    # common word or leaving a bare character at either edge of the cut.
     end = hard_max
-    # v7: hard-cut at char `end` lands in the middle of a CJK run if no
-    # PUNCT/PARTICLE/PRONOUN candidate was found in the soft range. That
-    # leaves a single isolated character (digit or letter) on whichever
-    # side of the cut didn't get it. The user reported "通勤 2" → "通勤 "
-    # / "2 小时..." and "会议 3" → "...会议 3" / "小时 群消息..."; both
-    # come from hard-cut landing between CJK and digit. Back up to the
-    # nearest punctuation/space boundary so the cut sits AT the boundary,
-    # not inside a word.
-    #
-    # Allow backing up slightly past first_safe (up to first_safe//2 or
-    # max(2, first_safe - 4)) — without this, dense CJK+number runs like
-    # "褪黑素30块" have no punct boundary inside [first_safe, hard_max)
-    # and the cut lands mid-word, orphaning the leading CJK on the next
-    # sub. Backing up to the LAST punctuation before first_safe keeps
-    # the head long enough for a meaningful phrase and the tail starts
-    # on a CJK word.
-    #
-    # v8.1: if back_limit is reached with no PUNCT/space in range, the
-    # cut lands mid-CJK (e.g. "...忍了,这 | 一忍就是..."). That's
-    # acceptable per user — the PUNCT `,` already split the previous
-    # sub-caption on a logical boundary, and the trailing CJK char
-    # becomes the start of the next sub's phrase (handled by recursion).
-    # We do NOT aggressively search backward for another PUNCT — that
-    # would make sub-0 over-long and pull in content from the next
-    # logical phrase.
     back_limit = max(2, first_safe - 4)
     while end > back_limit:
         prev_ch = text[end - 1] if end > 0 else ""
@@ -899,7 +867,7 @@ def _split_sentence_into_subs(text: str, max_chars: int, hard_max: int) -> list[
         if end >= len(word) and text[end - len(word):end] == word:
             end -= len(word)
             break
-    return [text[:end], *(_split_sentence_into_subs(text[end:], max_chars, hard_max))]
+    return [text[:end], *(_split_long_clause(text[end:], max_chars, hard_max))]
 
 
 # Sub-caption text cleanup: replace Chinese punctuation with a single

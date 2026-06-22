@@ -514,23 +514,46 @@ document.getElementById('createBtn').addEventListener('click', async () => {
 });
 
 // ── 操作按钮 ─────────────────────────────────────────────────────
-document.getElementById('rerunScriptBtn').addEventListener('click', async () => {
+async function rerunWithFeedback(btn, url, body) {
+  if (btn.disabled) return;
+  const orig = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '⏳ 已触发';
+  try {
+    const opts = {method: 'POST'};
+    if (body) {
+      opts.headers = {'Content-Type': 'application/json'};
+      opts.body = JSON.stringify(body);
+    }
+    const r = await fetch(API + url, opts);
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    btn.textContent = '✓ 已触发';
+    await refreshJobs();
+  } catch (e) {
+    btn.textContent = '✗ 失败';
+    console.error('rerun failed', e);
+  } finally {
+    setTimeout(() => {
+      btn.textContent = orig;
+      btn.disabled = false;
+    }, 1500);
+  }
+}
+
+document.getElementById('rerunScriptBtn').addEventListener('click', () => {
   if (!currentJob) return;
-  await fetch(API + '/__internal/touch-trigger', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({trigger: 'script'}),
-  });
-  await refreshJobs();
+  rerunWithFeedback(document.getElementById('rerunScriptBtn'),
+                    '/api/jobs/' + currentJob.id + '/script');
 });
-document.getElementById('rerunRenderBtn').addEventListener('click', async () => {
+document.getElementById('rerunRenderBtn').addEventListener('click', () => {
   if (!currentJob) return;
-  await fetch(API + '/api/jobs/' + currentJob.id + '/render', {method: 'POST'});
-  await refreshJobs();
+  rerunWithFeedback(document.getElementById('rerunRenderBtn'),
+                    '/api/jobs/' + currentJob.id + '/render');
 });
-document.getElementById('rerunNarrateBtn').addEventListener('click', async () => {
+document.getElementById('rerunNarrateBtn').addEventListener('click', () => {
   if (!currentJob) return;
-  await fetch(API + '/api/jobs/' + currentJob.id + '/narrate', {method: 'POST'});
-  await refreshJobs();
+  rerunWithFeedback(document.getElementById('rerunNarrateBtn'),
+                    '/api/jobs/' + currentJob.id + '/narrate');
 });
 document.getElementById('archiveBtn').addEventListener('click', async () => {
   if (!currentJob) return;

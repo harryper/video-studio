@@ -409,6 +409,30 @@ def test_v81_hard_cut_punct_boundary_acceptable():
         )
 
 
+def test_v9_strict_punct_split():
+    # v9: every _SPLIT_PUNCT (including 、 and ASCII ,) becomes a sub
+    # boundary. Trigger sentence "一个能秒掉整个朝代的神仙,忍了,这
+    # 一忍就是整整28年,中间隔了2次封神、3次朝堂清洗、5次人间王朝更
+    # 替,你就知道这克制有多深。" should split into 7 subs matching
+    # the user's expected layout:
+    #   一个能秒掉整个朝代的神仙 / 忍了 / 这一忍就是整整28年 /
+    #   中间隔了2次封神 / 3次朝堂清洗 / 5次人间王朝更替 /
+    #   你就知道这克制有多深
+    text = "一个能秒掉整个朝代的神仙,忍了,这一忍就是整整28年,中间隔了2次封神、3次朝堂清洗、5次人间王朝更替,你就知道这克制有多深。"
+    subs = rv._split_sentence_into_subs(text, max_chars=20, hard_max=20)
+    expected = [
+        "一个能秒掉整个朝代的神仙",
+        "忍了",
+        "这一忍就是整整28年",
+        "中间隔了2次封神",
+        "3次朝堂清洗",
+        "5次人间王朝更替",
+        "你就知道这克制有多深",
+    ]
+    actual = [rv._strip_punctuation(s).strip() for s in subs]
+    assert actual == expected, f"got {actual!r}, expected {expected!r}"
+
+
 def main():
     tests = [
         test_basic_chinese_short,
@@ -437,6 +461,7 @@ def main():
         test_v7_v6_not_regressed,
         test_v71_quan_ta_orphan_verb,
         test_v81_hard_cut_punct_boundary_acceptable,
+        test_v9_strict_punct_split,
     ]
     passed = 0
     failed = 0
