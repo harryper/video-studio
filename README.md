@@ -43,6 +43,40 @@ TTS 返回的词级时间戳是模型"打算"什么时候说，不是实测。20
 
 aligner 用 `。！？!?.` 切句。ASCII 句点 `.` 在切分集里因为它确实能断英文句子（`i.e. 5` → `i.e.` + `5`），但同一个分隔符也会腰斩小数（`前 0.5 秒` → `前 0.` + `5 秒`）。`_merge_decimal_split_sentences` 把"明显是同一段小数的两半"重新粘回去——条件故意收窄，不吞 `i.e. 5` / `Dr. Smith` 这类合法切分。
 
+## 字幕切分（v9 settled design）
+
+`_split_sentence_into_subs` 在 `scripts/process_video_render_jobs.py` L743-866：**每个 `_SPLIT_PUNCT` 字符（`,` `、` `。` `!` `?` 等）切一个 sub**，不贪心填满到 20 字。每个 PUNCT-boundary clause 各自成为一个 sub-caption，由 `wrap_caption_lines` 单行渲染（必要时 ≤ 2 行）。> 20 字且内部无 PUNCT 的 clause 兜底走 `_split_long_clause`（v7-v8.1 候选扫描 + hard-cut 逻辑）。
+
+为什么这样切：每 clause 一行 → 字幕节拍更碎、跟读更轻。Gold standard（用户认定的 7-sub 触发句）：
+
+| # | sub | 字数 |
+|---|---|---|
+| 0 | 一个能秒掉整个朝代的神仙 | 12 |
+| 1 | 忍了 | 2 |
+| 2 | 这一忍就是整整28年 | 10 |
+| 3 | 中间隔了2次封神 | 8 |
+| 4 | 3次朝堂清洗 | 6 |
+| 5 | 5次人间王朝更替 | 8 |
+| 6 | 你就知道这克制有多深 | 10 |
+
+节奏目标：5-8 subs / 10-15s scene，每个 ~1.5s（≈ 10 字 @ TTS speed=1.15）。回归测试：`scripts/test_wrap.py::test_v9_strict_punct_split`（精确匹配 7 sub，27/27 pass）。
+
+**脚本创作约束**：clause 之间必须用 ASCII `,` / 全角 `、` 隔开（不是逗号连续的 run-on 长句），每个 clause 2-12 字理想。避免单 clause > 20 字（会触发 `_split_long_clause` 兜底，节奏乱）。这条约束已经记入 memory（`feedback_subtitle_strict_punct_v9.md`），新脚本创作和配音都按这个走。
+
+## 脚本长度
+
+`scripts/process_video_script_jobs.py`：`MIN_SCRIPT_CHARS = 300`，`MAX_SCRIPT_CHARS = 1200`。短文（300-449 字，比如 30-60s 抖音小知识）和长文（450-1200 字，200s 抖音科普对标大约 1080 字）都接受。Style guide target 是 560-640 字，下限 300 是为了不卡死短文下限——LLM 输出噪声大。
+
+## Web 重跑入口
+
+详情面板顶部三个按钮：
+
+- **重跑脚本** → `POST /api/jobs/<id>/script`：status 重置 `pending` + 清 `error` + touch `.video-script-trigger`。守护进程只拣 `pending` 状态的 job，所以 error 状态的 job 必须先 reset。
+- **重跑渲染** → `POST /api/jobs/<id>/render`：status → `ready_script` + touch `.video-render-trigger`。
+- **重跑配音** → `POST /api/jobs/<id>/narrate`：status → `rendered` + touch `.video-narrate-trigger`。
+
+三个按钮共用 `rerunWithFeedback()` helper：请求中禁用 + 显示 `⏳ 已触发` / `✓ 已触发` / `✗ 失败`（防连点），1.5s 后恢复原文字。Gunicorn worker 是 fork 模式，加新端点后必须 `pkill -HUP gunicorn` 才会加载新代码。
+
 ## 目录布局
 
 ```
@@ -112,7 +146,7 @@ sudo systemctl enable --now \
 
 ```bash
 python3 scripts/test_align.py              # 小数点合并：         9/9
-python3 scripts/test_wrap.py               # 字幕折行：          14/14
+python3 scripts/test_wrap.py               # 字幕折行 + v9 split：27/27
 python3 scripts/test_alignment_subtimes.py # _load_alignment_subtimes： 3/3
 python3 scripts/test_html_output.py
 ```
