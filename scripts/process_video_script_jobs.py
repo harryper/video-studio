@@ -542,42 +542,78 @@ def main():
                 log(f"throttling: previous run {gap:.1f}s ago, sleeping {wait:.1f}s")
                 time.sleep(wait)
 
+        # Long-running drain + poll: process pending jobs serially through
+        # the 7h window (cron at 1am triggers daemon, expected to stay up
+        # until 8am). Inter-job cooldown protects the LLM agent host from
+        # back-to-back hits; idle poll picks up jobs web submits mid-run.
+        # Exit early only when we're near end-of-window AND idle.
+        STARTED = time.time()
+        WINDOW_SECONDS = 7 * 3600          # 7h, matches cron trigger
+        EARLY_EXIT_GRACE = 600             # last 10min + idle → exit
+        INTER_JOB_COOLDOWN = 5             # seconds between consecutive jobs
+        IDLE_POLL_INTERVAL = 30            # poll cadence when no pending
+
         processed = 0
-        for _ in range(1):  # max 1 job per run, just like voice writer
-            jobs = pending_jobs()
-            if not jobs:
+        while True:
+            if time.time() - STARTED >= WINDOW_SECONDS:
+                log("window elapsed (7h), exiting")
                 break
-            process_one(jobs[0])
-            processed += 1
+
+            jobs = pending_jobs()
+            if jobs:
+                process_one(jobs[0])
+                processed += 1
+                _scan_and_touch_triggers()
+                time.sleep(INTER_JOB_COOLDOWN)
+                continue
+
+            remaining = WINDOW_SECONDS - (time.time() - STARTED)
+            if remaining < EARLY_EXIT_GRACE:
+                log("near end of window + idle, exiting cleanly")
+                break
+            _scan_and_touch_triggers()
+            time.sleep(IDLE_POLL_INTERVAL)
 
         LAST_RUN_MARKER.write_text(f"{time.time()}\n", encoding="utf-8")
-        log(f"processed={processed}")
+        log(f"processed={processed} (drained over {(time.time()-STARTED)/60:.1f}min)")
 
-        # Cascade: touch render trigger if any job reached ready_script.
-        # For preview_only jobs we skip the render daemon and go straight
-        # to narrate (black-bg ffmpeg), so touch NARRATE_TRIGGER instead.
-        touched_render = False
-        touched_narrate = False
-        for j in jobs:
-            jp = job_path(j["id"])
-            if not jp.exists():
-                log(f"  cascade: skip {j['id']} (json missing)")
-                continue
-            cur = load_job(jp)
-            st = cur.get("status")
-            is_preview = bool((cur.get("render") or {}).get("preview_only", False))
-            log(f"  cascade: {j['id']} status={st!r} preview={is_preview}")
-            if st == "rendered" and is_preview:
-                NARRATE_TRIGGER.touch()
-                touched_narrate = True
-            elif st == "ready_script":
-                RENDER_TRIGGER.touch()
-                touched_render = True
-        if touched_render:
-            log(f"touched {RENDER_TRIGGER.name}")
-        if touched_narrate:
-            log(f"touched {NARRATE_TRIGGER.name} (preview_only)")
+        _scan_and_touch_triggers()
     return 0
+
+
+def _scan_and_touch_triggers():
+    # Cascade: scan ALL job files (not just the last batch's `jobs`) so
+    # we don't miss earlier jobs that became ready_script during the
+    # drain loop. Touch render trigger if any hit ready_script, or
+    # narrate trigger for preview_only jobs that finished rendering.
+    # Called after every process_one and on every idle poll, NOT only at
+    # main-loop exit — otherwise ready_script jobs sit idle for the
+    # remaining 6h of the cron window with no render daemon running.
+    touched_render = False
+    touched_narrate = False
+    if not JOBS_DIR.exists():
+        return
+    for jp in JOBS_DIR.glob("v_*.json"):
+        try:
+            cur = load_job(jp)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if cur.get("mode") != "video":
+            continue
+        j_id = cur.get("id", jp.stem)
+        st = cur.get("status")
+        is_preview = bool((cur.get("render") or {}).get("preview_only", False))
+        log(f"  cascade: {j_id} status={st!r} preview={is_preview}")
+        if st == "rendered" and is_preview:
+            NARRATE_TRIGGER.touch()
+            touched_narrate = True
+        elif st == "ready_script":
+            RENDER_TRIGGER.touch()
+            touched_render = True
+    if touched_render:
+        log(f"touched {RENDER_TRIGGER.name}")
+    if touched_narrate:
+        log(f"touched {NARRATE_TRIGGER.name} (preview_only)")
 
 
 if __name__ == "__main__":
