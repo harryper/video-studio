@@ -6,6 +6,13 @@
     "enabled": true,
     "primary_use": "voice"
   },
+  "Chinese (Mandarin)_Warm_Girl": {
+    "display_name": "温暖少女",
+    "default_speed": 1.0,
+    "description": "MiniMax 系统音色 (中文女声, 温暖)",
+    "enabled": true,
+    "primary_use": "voice"
+  },
   "azure_yunze_clone": {
     "display_name": "云泽克隆",
     "default_speed": 0.9,

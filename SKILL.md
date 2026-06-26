@@ -50,7 +50,7 @@ Each daemon touches the next trigger file on success, creating the cascade.
 
 ## Voice registry (shared with voice-studio)
 
-`/root/.openclaw/workspace/skills/voice-studio/scripts/voice_registry.json` holds the single source of truth for TTS voice configs. Video default is `Chinese (Mandarin)_Radio_Host` (display: 电台男主播, speed 1.0).
+`/root/.openclaw/workspace/skills/voice-studio/scripts/voice_registry.json` holds the single source of truth for TTS voice configs. Video default is `Chinese (Mandarin)_Warm_Girl` (display: 温暖少女, speed 1.0).
 
 ## Render performance notes (this VM, June 2026)
 

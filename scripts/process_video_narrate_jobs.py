@@ -566,7 +566,7 @@ def process_one(job):
         # Resolve voice from registry + job override
         registry = json.loads(VOICE_REGISTRY.read_text(encoding="utf-8"))
         audio_cfg = job.get("audio", {})
-        voice = audio_cfg.get("voice", "Chinese (Mandarin)_Radio_Host")
+        voice = audio_cfg.get("voice", "Chinese (Mandarin)_Warm_Girl")
         speed = float(audio_cfg.get("speed", 1.0))
         bgm_enabled = bool(audio_cfg.get("bgm_enabled", False))
         bgm_volume = float(audio_cfg.get("bgm_volume", 0.15))

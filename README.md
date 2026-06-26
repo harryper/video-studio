@@ -116,7 +116,7 @@ runs/{job_id}/                  每个 job 的产物：
 
 ## 跨 skill 依赖
 
-`scripts/minimax_tts.py`、`minimax_tts_subs.py`、`voice_registry.json` 都按绝对路径从 `voice-studio` 读，不通过 import。systemd 的 `Environment=PATH` 把 `voice-studio/scripts/` 加进去，子进程能解析。默认音色是 `Chinese (Mandarin)_Radio_Host`（显示名：电台男主播，speed 1.0）。
+`scripts/minimax_tts.py`、`minimax_tts_subs.py`、`voice_registry.json` 都按绝对路径从 `voice-studio` 读，不通过 import。systemd 的 `Environment=PATH` 把 `voice-studio/scripts/` 加进去，子进程能解析。默认音色是 `Chinese (Mandarin)_Warm_Girl`（显示名：温暖少女，speed 1.0）。
 
 `scripts/minimax_api_key.txt` 和 `pexels_api_key.txt` 持有密钥，被 `.gitignore` 排除。
 

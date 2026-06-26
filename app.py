@@ -302,8 +302,8 @@ def create_job():
             'preview_only': preview_only,
         },
         'audio': {
-            'voice': 'Chinese (Mandarin)_Radio_Host',
-            'voice_display_name': '电台男主播',
+            'voice': 'Chinese (Mandarin)_Warm_Girl',
+            'voice_display_name': '温暖少女',
             'speed': 1.15,
             'bgm_enabled': False,
             'bgm_volume': 0.15,
