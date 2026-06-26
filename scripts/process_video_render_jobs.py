@@ -50,6 +50,45 @@ DEFAULT_HEIGHT = 1080
 DEFAULT_DURATION_SEC = 150
 DEFAULT_FPS = 15
 
+# 封面 splash 持续时间。cover scene 在视频最前面占 COVER_DURATION_SEC，
+# 后续内容场景的 scene_times / subtimes 整体后移这个量。
+COVER_DURATION_SEC = 2.5
+
+# cover_fallback 在脚本没拿到 LLM 写的 cover.json 时，用这些反常识/转折
+# 词找钩子句当主标。顺序按"钩子强度"排，前面的优先。
+_COVER_HOOK_MARKERS = (
+    "真相是", "万万没想到", "没想到", "说到底", "本质上",
+    "其实", "但是", "然而", "原来", "居然", "竟",
+    "不是", "而是", "结果", "别看", "别以为",
+)
+
+# v3.1 钩眼词白名单 — 跟 sv._HOOK_SUBSTR 同步 (fallback 复用, 避免跨模块 import)
+_COVER_HL_HOOK_SUBSTR = (
+    "不", "没", "非", "未", "莫", "别", "无",
+    "却", "但", "可", "倒", "反", "岂", "就", "才", "都", "竟", "正",
+    "不是", "并非", "然而", "但是", "不过", "可是", "当然", "竟然", "居然", "反而", "其实", "根本", "实际",
+    "真", "假", "最", "太", "极", "很", "再", "对", "错", "难", "虚", "实",
+    "一", "二", "三", "四", "五", "六", "七", "八", "九", "十", "百", "千", "万", "亿", "半", "双",
+    "战略", "成本", "燃料", "命", "底", "本质", "续命", "底层", "续", "真", "卡路里", "便宜", "贵",
+)
+
+
+def _is_cover_hl_hook(slice_):
+    """v3.1: fallback-side copy of sv._is_valid_highlight.
+
+    Returns True if slice_ is a hook word (negation/transition/number/
+    core noun), False for common-particle slices like "是调" / "贵得".
+    """
+    if not slice_:
+        return False
+    if any(c.isdigit() for c in slice_):
+        return True
+    if any(c in "%％" for c in slice_):
+        return True
+    if any(sub in slice_ for sub in _COVER_HL_HOOK_SUBSTR):
+        return True
+    return False
+
 LOCK_PATH = SKILL_DIR / ".video-render-writer.lock"
 RENDER_TRIGGER = SKILL_DIR / ".video-render-trigger"
 NARRATE_TRIGGER = SKILL_DIR / ".video-narrate-trigger"
@@ -329,6 +368,19 @@ def render_placeholder(
         else None
     )
 
+    # 封面：脚本守护进程写好的 script_meta.cover 优先；缺失时用
+    # cover_fallback 从正文里捞一个反常识句兜底。空脚本两个都空，
+    # build_image_composition_html 会跳过封面注入。
+    cover = {}
+    jp = job_path(job_id)
+    if jp.exists():
+        try:
+            cover = (load_job(jp).get("script_meta") or {}).get("cover") or {}
+        except (OSError, json.JSONDecodeError):
+            cover = {}
+    if not cover.get("main"):
+        cover = cover_fallback(script_text)
+
     html = build_image_composition_html(
         media_items,
         chunks,
@@ -337,6 +389,7 @@ def render_placeholder(
         height=height,
         scene_times=scene_times,
         subtimes=subtimes,
+        cover=cover,
     )
     html_path.write_text(html, encoding="utf-8")
     log(f"  generated HTML with {len(chunks)} scenes ({len(script_text)} chars)"
@@ -1639,6 +1692,124 @@ def _enrich_with_kinetic(media_items, chunks, width, height, apply_overlay=False
     return out
 
 
+def _safe_hl_slice(main, hl):
+    """Split `main` into (pre, highlight) for the cover layout, clamping OOB.
+
+    render_cover_layout callers may pass covers with bad highlight indices
+    (e.g. from cover_fallback on a short hook sentence, or stale LLM
+    output). Crashing Puppeteer on OOB is worse than rendering an empty
+    highlight, so we clamp and return a safe split.
+    """
+    L = len(main or "")
+    if L == 0:
+        return "", ""
+    try:
+        s, e = int(hl[0]), int(hl[1])
+    except (TypeError, ValueError):
+        return main, ""
+    s = max(0, min(s, L))
+    e = max(0, min(e, L))
+    if e <= s:
+        # No usable window — render whole main as pre, no highlight.
+        return main, ""
+    return main[:s], main[s:e]
+
+
+def cover_fallback(script_text):
+    """Pick a cover dict from the script when LLM didn't produce one.
+
+    Strategy:
+    1. Split script into sentences (。！？ first, then ，/； if no terminators).
+    2. Find the first sentence containing a 反常识 hook marker
+       (其实/但是/真相是/...) — that's the main. If none, use the first
+       sentence (better than nothing).
+    3. Truncate main to ≤8 chars (LLM is asked for 4-6; fallback is more
+       lenient to keep hook words intact).
+    4. Highlight: a 2-char window starting at position 1 (not the first
+       char — that's the v3 rule enforced by parse_cover_validation on
+       the LLM side; fallback mirrors it).
+    5. Sub: the next sentence that isn't main.
+    """
+    if not script_text or not script_text.strip():
+        return {"main": "", "main_highlight": [0, 0], "sub": ""}
+    sents = [s.strip() for s in re.split(r"(?<=[。！？])", script_text) if s.strip()]
+    if len(sents) <= 1:
+        sents = [s.strip() for s in re.split(r"[,，;；]", script_text) if s.strip()]
+    if not sents:
+        return {"main": "", "main_highlight": [0, 0], "sub": ""}
+    hook_idx = -1
+    for idx, s in enumerate(sents):
+        if any(m in s for m in _COVER_HOOK_MARKERS):
+            hook_idx = idx
+            break
+    if hook_idx < 0:
+        hook_idx = 0
+    hook_sent = sents[hook_idx]
+    main = hook_sent[:8]
+    L = len(main)
+    # v3.1: pick a highlight window that's a semantic-complete hook word.
+    # Try [1, 3) first (default), then [1, 2), [2, 4), [1, 4) — fall back to
+    # a non-first, non-last 1-2 char window. Final fallback [0, 0) signals
+    # "no valid hook in this main" and the renderer will just not highlight.
+    hl_s, hl_e = 0, 0
+    for cand_s, cand_e in [(1, min(3, L)), (1, min(2, L)),
+                           (2, min(4, L)), (1, min(4, L))]:
+        if cand_s >= L or cand_e > L or cand_e <= cand_s:
+            continue
+        if _is_cover_hl_hook(main[cand_s:cand_e]):
+            hl_s, hl_e = cand_s, cand_e
+            break
+    if hl_s == 0 and hl_e == 0 and L >= 2:
+        # Couldn't find a hook word — default to [1, min(3, L)] so the
+        # sub renderer at least has *some* highlight (the v3 first-char rule
+        # is still respected).
+        hl_s, hl_e = 1, min(3, L)
+    sub = ""
+    for j, s in enumerate(sents):
+        if j == hook_idx:
+            continue
+        cleaned = s.strip()
+        if cleaned and cleaned != main:
+            sub = cleaned
+            break
+    return {"main": main, "main_highlight": [hl_s, hl_e], "sub": sub}
+
+
+def render_cover_layout(cover, scene_idx, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT):
+    """Render the opening cover scene HTML (2.5s big-text splash).
+
+    Returns a full <div class="clip cover-{landscape|portrait}"> scene
+    that build_image_composition_html splices in as scene 1. The
+    `scene_idx` arg is accepted for symmetry with other scene builders
+    but not used (cover is always scene 1).
+    """
+    if not isinstance(cover, dict) or not cover.get("main"):
+        return ""
+    main = str(cover.get("main", ""))
+    hl = cover.get("main_highlight", [0, 0])
+    sub = str(cover.get("sub", ""))
+    pre, hl_slice = _safe_hl_slice(main, hl)
+    portrait = width < height
+    orient_cls = "cover-portrait" if portrait else "cover-landscape"
+    # Font sizes — bigger than the regular hook (96/108) so the cover
+    # punches through the first 2.5s. Portrait gets a slight bump.
+    main_fs = 260 if portrait else 240
+    sub_fs = 72 if portrait else 80
+    post = main[len(pre) + len(hl_slice):]
+    return (
+        f'    <div id="cover-scene" class="clip {orient_cls}" data-track-index="1" '
+        f'data-start="0" data-duration="{COVER_DURATION_SEC}">\n'
+        f'      <div class="cover-bg"></div>\n'
+        f'      <div class="cover-main" style="font-size:{main_fs}px;">'
+        f'<span class="cover-pre">{escape_html(pre)}</span>'
+        f'<span class="cover-hl">{escape_html(hl_slice)}</span>'
+        f'<span class="cover-post">{escape_html(post)}</span>'
+        f'</div>\n'
+        f'      <div class="cover-sub" style="font-size:{sub_fs}px;">{escape_html(sub)}</div>\n'
+        f'    </div>'
+    )
+
+
 def build_image_composition_html(
     media_items,
     chunks,
@@ -1647,6 +1818,7 @@ def build_image_composition_html(
     height=DEFAULT_HEIGHT,
     scene_times=None,
     subtimes=None,
+    cover=None,
 ):
     """Build hyperframes composition HTML with image backgrounds + Ken Burns + subtitles.
 
@@ -1663,6 +1835,13 @@ def build_image_composition_html(
       duration equally (the old behaviour, retained as a fallback).
     - Ken Burns: slow zoom in (scale 1.0 → 1.12) + slight pan
     - Subtitle: large text at bottom with dark gradient overlay
+
+    cover: optional dict {main, main_highlight, sub} — when present, a
+    2.5s cover splash is prepended (scene 1), all content scene
+    start times + sub-caption slots are shifted by COVER_DURATION_SEC,
+    and content scene i renders as HTML scene i+1 (sub ids sub-{i+2}-*).
+    subtimes remains 0-based content-indexed (subtimes[i] for content
+    scene i); only the slot times shift.
     """
     n = len(media_items)
     if scene_times and len(scene_times) == n and any(t is not None for t in scene_times):
@@ -1690,6 +1869,44 @@ def build_image_composition_html(
         # 预生成 starts 列表（每段起、止各 round 一次）避免累计误差。
         starts = [round(i * per, 3) for i in range(n + 1)]
         starts[-1] = round(total_duration, 3)  # 最后一段吃尾差
+    # Cover prepend: when cover is present, shift all content scene
+    # starts by COVER_DURATION_SEC (the cover scene occupies 0..COVER).
+    # scene_times/subtimes are 0-based TTS-time-indexed; their values
+    # represent the audio timeline, which starts at video time COVER.
+    cover_offset = 0
+    cover_scene_html = ""
+    cover_tweens: list[str] = []
+    if cover and isinstance(cover, dict) and cover.get("main"):
+        cover_offset = 1
+        starts = [round(s + COVER_DURATION_SEC, 3) for s in starts]
+        # Force first content scene to start exactly at cover end. TTS
+        # alignment has ~0.3s initial silence so starts[0] lands at
+        # COVER+0.3 — that creates a black gap where audio is already
+        # speaking but no image is on screen. The sub still appears at
+        # TTS[0]+COVER (sub_slots come from alignment, not from starts);
+        # only the image moves up to fill the gap.
+        if starts and starts[0] > COVER_DURATION_SEC:
+            starts[0] = COVER_DURATION_SEC
+        cover_scene_html = render_cover_layout(cover, scene_idx=0, width=width, height=height)
+        # Cover tween: cover-main fades in fast, holds, fades out at the
+        # end. cover-sub enters slightly later (info hierarchy: hook first,
+        # sub as supporting line).
+        cover_tweens.append(
+            "tl.fromTo('#cover-main', { opacity: 0, scale: 0.92 }, "
+            "{ opacity: 1, scale: 1, duration: 0.2, ease: 'power3.out' }, 0.05);"
+        )
+        cover_tweens.append(
+            "tl.fromTo('#cover-sub', { opacity: 0 }, "
+            f"{{ opacity: 1, duration: 0.2 }}, {COVER_DURATION_SEC - 0.7:.2f});"
+        )
+        cover_tweens.append(
+            "tl.to('#cover-main', { opacity: 0, duration: 0.2 }, "
+            f"{COVER_DURATION_SEC - 0.2:.2f});"
+        )
+        cover_tweens.append(
+            "tl.to('#cover-sub', { opacity: 0, duration: 0.2 }, "
+            f"{COVER_DURATION_SEC - 0.2:.2f});"
+        )
     # Ken Burns: 抖音科普风动效更克制，只做轻微推进 (1.0 → 1.08)，无方向 pan，
     # ease 也改成 linear，参考视频基本就是静帧 + 字幕。
     kb_variants = [
@@ -1716,6 +1933,12 @@ def build_image_composition_html(
         start = starts[i]
         per_this = starts[i + 1] - starts[i]
         kb = kb_variants[i % len(kb_variants)]
+        # html_i = HTML scene number (content scene 0 is HTML scene 2
+        # when cover is present, else scene 1). cover_t shifts hook
+        # tween absolute times by COVER so the opening hook fires at
+        # the start of the *content* (post-cover), not the video.
+        html_i = i + 1 + cover_offset
+        cover_t = COVER_DURATION_SEC if cover_offset else 0.0
         # 抖音科普风字幕：单行短句，max_lines=1，每张图一个 sub-caption。
         caption_chars = 20 if width >= height else 14
         # RC3+ fix: sub-captions + per-slot timing follow alignment when
@@ -1730,7 +1953,15 @@ def build_image_composition_html(
         )
         if _scene_subtimes:
             subcaptions = [st[0] for st in _scene_subtimes]
-            sub_slots = [(st[1], st[2]) for st in _scene_subtimes]
+            # Alignment slots are in TTS time (0..total_duration). When
+            # cover is present, the content starts at video time COVER,
+            # so shift each slot by cover_t to map to video time. The
+            # equal-time fallback below already uses the shifted `start`
+            # so it doesn't need this.
+            if cover_offset:
+                sub_slots = [(st[1] + cover_t, st[2] + cover_t) for st in _scene_subtimes]
+            else:
+                sub_slots = [(st[1], st[2]) for st in _scene_subtimes]
         else:
             subcaptions = wrap_to_subcaptions(chunk, max_chars=caption_chars, max_lines=1)
             n_subs_fb = len(subcaptions)
@@ -1745,7 +1976,7 @@ def build_image_composition_html(
         if media_kind == "video":
             media_filename = Path(media_path).name
             stage_media_html.append(
-                f'<video class="bg bg-video" id="bg-{i+1}" '
+                f'<video class="bg bg-video" id="bg-{html_i}" '
                 f'src="videos/{media_filename}" muted playsinline loop '
                 f'data-track-index="0" data-start="{start}" '
                 f'data-duration="{per_this}"></video>'
@@ -1757,7 +1988,7 @@ def build_image_composition_html(
             vid_path, overlay_html = media_path
             media_filename = Path(vid_path).name
             stage_media_html.append(
-                f'<video class="bg bg-video" id="bg-{i+1}" '
+                f'<video class="bg bg-video" id="bg-{html_i}" '
                 f'src="videos/{media_filename}" muted playsinline loop '
                 f'data-track-index="0" data-start="{start}" '
                 f'data-duration="{per_this}"></video>'
@@ -1769,7 +2000,7 @@ def build_image_composition_html(
             img_path, overlay_html = media_path
             media_filename = Path(img_path).name
             media_html = (
-                f'<div class="bg" id="bg-{i+1}" '
+                f'<div class="bg" id="bg-{html_i}" '
                 f'style="background-image:url(images/{media_filename});"></div>'
                 + "\n      " + overlay_html
             )
@@ -1779,7 +2010,7 @@ def build_image_composition_html(
         else:
             media_filename = Path(media_path).name
             media_html = (
-                f'<div class="bg" id="bg-{i+1}" '
+                f'<div class="bg" id="bg-{html_i}" '
                 f'style="background-image:url(images/{media_filename});"></div>'
             )
         hook_html = ""
@@ -1793,7 +2024,7 @@ def build_image_composition_html(
         # Emit one <div class="subtitle"> per sub-caption slot
         sub_html_parts = []
         for j, lines in enumerate(subcaptions):
-            sub_id = f"sub-{i+1}-{j+1}"
+            sub_id = f"sub-{html_i}-{j+1}"
             caption_html = "".join(f'<div class="cap-line">{escape_html(line)}</div>' for line in lines)
             sub_html_parts.append(
                 f'<div class="subtitle" id="{sub_id}">{caption_html}</div>'
@@ -1802,7 +2033,7 @@ def build_image_composition_html(
         # track 1 上的独立 clip，与下一场景 clip 在同一秒边界重叠 → 报错。
         # 改用 clip 末尾的 Ken Burns + 字幕淡出做柔和切换。
         scenes_html.append(
-            f'    <div id="scene-{i+1}" class="clip" data-track-index="1" '
+            f'    <div id="scene-{html_i}" class="clip" data-track-index="1" '
             f'data-start="{start}" data-duration="{per_this}">\n'
             f'      {media_html}\n'
             f'      {hook_html}\n'
@@ -1812,26 +2043,29 @@ def build_image_composition_html(
         # Ken Burns: only for image/video scenes, NOT kinetic
         if media_kind in ("image", "video", "image_overlay", "video_overlay"):
             timeline_tweens.append(
-                f"tl.to('#bg-{i+1}', {{ scale: {kb['scale']}, x: {kb['x']}, y: {kb['y']}, "
+                f"tl.to('#bg-{html_i}', {{ scale: {kb['scale']}, x: {kb['x']}, y: {kb['y']}, "
                 f"ease: 'none', duration: {per_this} }}, {start});"
             )
         if i == 0 and media_kind not in ("kinetic", "image_overlay", "video_overlay"):
+            # cover_t shifts hook absolute times by COVER when cover is
+            # present, so the opening hook fires at the start of the
+            # *content* (post-cover), not the video.
             timeline_tweens.append(
-                "tl.fromTo('#opening-hook', { opacity: 0, scale: 0.92 }, "
-                "{ opacity: 1, scale: 1, duration: 0.25, ease: 'power3.out' }, 0.1);"
+                f"tl.fromTo('#opening-hook', {{ opacity: 0, scale: 0.92 }}, "
+                f"{{ opacity: 1, scale: 1, duration: 0.25, ease: 'power3.out' }}, {cover_t + 0.1:.2f});"
             )
             # Hook is a flash of attention-grabbing text in the first
             # 1.5s; sub-caption 1 takes over from there. Was 4.5s, which
             # covered the first 1-2 sub-captions and caused visible
             # overlap with regular subtitles.
             timeline_tweens.append(
-                "tl.to('#opening-hook', { opacity: 0, duration: 0.25 }, 1.5);"
+                f"tl.to('#opening-hook', {{ opacity: 0, duration: 0.25 }}, {cover_t + 1.5:.2f});"
             )
         # 场景间 wipe 已删除（lint 冲突），靠 Ken Burns + 字幕淡出做切换
         # Sub-caption slots: fade in at slot start, fade out 0.3s before slot end.
         # The very last sub-caption of the very last scene stays visible to the end.
         for j in range(n_subs):
-            sub_sel = f"#sub-{i+1}-{j+1}"
+            sub_sel = f"#sub-{html_i}-{j+1}"
             slot_start, slot_end = sub_slots[j]
             slot_dur = slot_end - slot_start
             # Fade-in always 0.2s. Fade-out duration adapts to slot length
@@ -1858,8 +2092,16 @@ def build_image_composition_html(
                 )
 
     stage_media_str = "\n".join(stage_media_html)
-    scenes_str = "\n".join(scenes_html)
-    tweens_str = "\n    ".join(timeline_tweens)
+    # Prepend cover scene (if any) so it occupies scene 1. Cover tweens
+    # run first on the timeline (cover occupies 0..COVER).
+    if cover_scene_html:
+        scenes_str = cover_scene_html + "\n" + "\n".join(scenes_html)
+        tweens_str = "\n    ".join(cover_tweens + timeline_tweens)
+        total_duration_eff = round(total_duration + COVER_DURATION_SEC, 3)
+    else:
+        scenes_str = "\n".join(scenes_html)
+        tweens_str = "\n    ".join(timeline_tweens)
+        total_duration_eff = total_duration
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -1941,12 +2183,52 @@ def build_image_composition_html(
       opacity: 0.85; pointer-events: none; z-index: 10;
       transform: scaleX(0);
     }}
+    /* 封面 splash：2.5 秒大字冲击。背景纯深色 + 中心 main + 下方 sub。
+       main 用多向 text-shadow 模拟粗描边；hl 钩眼词用亮黄高亮跳出。 */
+    .cover-bg {{
+      position: absolute; inset: 0;
+      background: linear-gradient(135deg, #0a0e1a 0%, #1a1f3a 50%, #0a0e1a 100%);
+    }}
+    .cover-main {{
+      position: absolute; left: 50%; top: 38%;
+      transform: translate(-50%, -50%);
+      font-weight: 900; line-height: 1.05; text-align: center;
+      letter-spacing: 4px; color: #fff;
+      text-shadow:
+        -5px -5px 0 #000, 5px -5px 0 #000,
+        -5px 5px 0 #000, 5px 5px 0 #000,
+        -5px 0 0 #000, 5px 0 0 #000,
+        0 -5px 0 #000, 0 5px 0 #000,
+        0 10px 30px rgba(0, 0, 0, 0.7);
+      white-space: nowrap;
+    }}
+    .cover-hl {{
+      color: #ffd84d;
+      text-shadow:
+        -5px -5px 0 #000, 5px -5px 0 #000,
+        -5px 5px 0 #000, 5px 5px 0 #000,
+        -5px 0 0 #000, 5px 0 0 #000,
+        0 -5px 0 #000, 0 5px 0 #000,
+        0 0 24px rgba(255, 216, 77, 0.5);
+    }}
+    .cover-sub {{
+      position: absolute; left: 50%; top: 62%;
+      transform: translate(-50%, -50%);
+      font-weight: 700; line-height: 1.2; text-align: center;
+      letter-spacing: 2px; color: #f0f0f0;
+      max-width: 80%;
+      text-shadow:
+        -3px -3px 0 #000, 3px -3px 0 #000,
+        -3px 3px 0 #000, 3px 3px 0 #000,
+        -3px 0 0 #000, 3px 0 0 #000,
+        0 -3px 0 #000, 0 3px 0 #000;
+    }}
   </style>
 </head>
 <body>
   <div data-composition-id="dynamic"
        data-width="{width}" data-height="{height}"
-       data-start="0" data-duration="{total_duration}">
+       data-start="0" data-duration="{total_duration_eff}">
 {stage_media_str}
 {scenes_str}
   </div>
