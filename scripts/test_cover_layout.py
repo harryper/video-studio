@@ -10,6 +10,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import process_video_render_jobs as rv  # noqa: E402
 import process_video_script_jobs as sv  # noqa: E402
+import process_video_narrate_jobs as nv  # noqa: E402
 
 
 def test_render_cover_layout_basic():
@@ -333,6 +334,73 @@ def test_cover_fallback_picks_hook_highlight():
             f"fallback highlight {slice_!r} on {fb['main']!r} is not a hook word"
 
 
+def test_cover_audio_padded_when_delay_set():
+    """v3.2: merge_video_audio with audio_delay_sec=0.8 must build a filter
+    chain that prepends adelay=800|800 so the audio starts at video time
+    0.8s (cover end), and the output duration covers both streams.
+
+    Without this, the first audible word plays during the cover scene
+    (audio 0.32s in, cover ends at 0.8s) — user hears 0.48s of TTS ahead
+    of any visual cue. With adelay, audio waits until 0.8s, syncing
+    with sub-2-1 fade-in (TTS[0] + COVER = 0.32 + 0.8 = 1.12s, but the
+    silent gap from 0.8-1.12 is intentional, matching TTS initial silence).
+    """
+    import unittest.mock as _mock
+
+    captured = {}
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        # Return a successful CompletedProcess so merge doesn't raise
+        return _mock.Mock(returncode=0, stderr="", stdout="")
+
+    with _mock.patch.object(nv, "get_duration_sec", side_effect=lambda p: 55.5), \
+         _mock.patch.object(nv.subprocess, "run", side_effect=fake_run):
+        nv.merge_video_audio(
+            Path("/tmp/fake.mp4"), Path("/tmp/fake.mp3"),
+            Path("/tmp/out.mp4"), audio_delay_sec=0.8,
+        )
+
+    cmd = captured["cmd"]
+    # ffmpeg -filter_complex is the arg after "-filter_complex"
+    fc_idx = cmd.index("-filter_complex") + 1
+    fc = cmd[fc_idx]
+    assert "adelay=800|800" in fc, \
+        f"filter_complex must contain adelay=800|800, got: {fc}"
+    # -t output_duration must cover audio+delay
+    t_idx = cmd.index("-t") + 1
+    assert float(cmd[t_idx]) >= 56.3, \
+        f"output duration must cover audio(55.5)+delay(0.8)=56.3, got {cmd[t_idx]}"
+
+
+def test_cover_no_audio_delay_when_no_cover():
+    """v3.2: merge_video_audio without delay uses the legacy anull filter.
+
+    When cover.json is absent, audio_delay_sec=0.0 must produce the
+    pre-v3.2 filter (no adelay) so existing jobs without covers aren't
+    affected.
+    """
+    import unittest.mock as _mock
+
+    captured = {}
+    def fake_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return _mock.Mock(returncode=0, stderr="", stdout="")
+
+    with _mock.patch.object(nv, "get_duration_sec", side_effect=lambda p: 55.5), \
+         _mock.patch.object(nv.subprocess, "run", side_effect=fake_run):
+        nv.merge_video_audio(
+            Path("/tmp/fake.mp4"), Path("/tmp/fake.mp3"),
+            Path("/tmp/out.mp4"),
+        )
+
+    cmd = captured["cmd"]
+    fc_idx = cmd.index("-filter_complex") + 1
+    fc = cmd[fc_idx]
+    assert "adelay" not in fc, \
+        f"no cover → no adelay expected, got: {fc}"
+    assert "anull" in fc, f"no cover → anull passthrough expected, got: {fc}"
+
+
 if __name__ == "__main__":
     tests = [
         test_render_cover_layout_basic,
@@ -358,6 +426,8 @@ if __name__ == "__main__":
         test_cover_validate_accepts_number_highlight,
         test_cover_present_first_scene_starts_at_cover_end,
         test_cover_fallback_picks_hook_highlight,
+        test_cover_audio_padded_when_delay_set,
+        test_cover_no_audio_delay_when_no_cover,
     ]
     failed = 0
     for t in tests:

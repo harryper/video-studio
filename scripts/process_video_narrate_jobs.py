@@ -47,6 +47,12 @@ NARRATE_TRIGGER = SKILL_DIR / ".video-narrate-trigger"
 LAST_RUN_MARKER = SKILL_DIR / ".video-narrate-writer.lastrun"
 LOG_FILE = Path("/var/log/video-studio/video-narrate-watcher.log")
 
+# v3.2: mirror render daemon's COVER_DURATION_SEC so audio delay matches
+# the cover scene's wall-clock end. If these drift, voice plays before
+# the cover ends (audio heard during cover) or after a gap. Keep in sync
+# with process_video_render_jobs.py:COVER_DURATION_SEC.
+COVER_DURATION_SEC = 0.8
+
 
 def log(msg):
     line = f"[video-narrate-writer] {msg}"
@@ -469,7 +475,7 @@ def mix_voice_with_bgm_loop(
         raise RuntimeError(f"ffmpeg mix failed: {(result.stderr or result.stdout)[-1000:]}")
 
 
-def merge_video_audio(video_mp4, audio_mp3, out_mp4):
+def merge_video_audio(video_mp4, audio_mp3, out_mp4, audio_delay_sec=0.0):
     """Merge once; never truncate either stream — extend the shorter one instead.
 
     RC1 fix: previous code used `-t v_dur` when audio was shorter than video,
@@ -477,22 +483,39 @@ def merge_video_audio(video_mp4, audio_mp3, out_mp4):
     to output_duration = max(v_dur, a_dur):
     - video shorter than audio → tpad=clone extends the last video frame
     - audio shorter than video → apad adds silence to the audio tail
+
+    v3.2: audio_delay_sec shifts the audio to start later in the video. Used
+    when a cover scene occupies the first N seconds — without the delay, the
+    first audible word ("驴") would play during the cover (no subtitle yet),
+    making the user hear audio ahead of any visual. With the delay, audio
+    starts at video time N, matching the cover's end. adelay pads the head
+    with silence; apad at the end compensates so total length still matches.
     """
     v_dur = get_duration_sec(video_mp4)
     a_dur = get_duration_sec(audio_mp3)
-    output_duration = max(v_dur, a_dur)
-    log(f"  video={v_dur:.1f}s, audio={a_dur:.1f}s, output={output_duration:.1f}s")
+    output_duration = max(v_dur, a_dur + audio_delay_sec)
+    log(f"  video={v_dur:.1f}s, audio={a_dur:.1f}s, delay={audio_delay_sec:.1f}s, output={output_duration:.1f}s")
 
-    if a_dur > v_dur + 0.1:
-        extension = a_dur - v_dur
+    delay_ms = int(audio_delay_sec * 1000)
+    # adelay takes per-channel ms (stereo: L|R). We use mono or stereo
+    # depending on the input; passing the same value for both channels
+    # works for both layouts in ffmpeg.
+    if delay_ms > 0:
+        head_filter = f"[1:a]adelay={delay_ms}|{delay_ms}"
+    else:
+        head_filter = "[1:a]anull"
+
+    if a_dur + audio_delay_sec > v_dur + 0.1:
+        extension = (a_dur + audio_delay_sec) - v_dur
         cmd = [
             "ffmpeg", "-y",
             "-i", str(video_mp4),
             "-i", str(audio_mp3),
             "-filter_complex",
+            f"{head_filter}[delayed];"
             f"[0:v]tpad=stop_mode=clone:stop_duration={extension:.3f}[v]",
             "-map", "[v]",
-            "-map", "1:a",
+            "-map", "[delayed]",
             "-c:v", "libx264",
             "-preset", "veryfast",
             "-crf", "20",
@@ -502,13 +525,13 @@ def merge_video_audio(video_mp4, audio_mp3, out_mp4):
             str(out_mp4),
         ]
     else:
-        pad = max(output_duration - a_dur, 0.0)
+        pad = max(output_duration - (a_dur + audio_delay_sec), 0.0)
         cmd = [
             "ffmpeg", "-y",
             "-i", str(video_mp4),
             "-i", str(audio_mp3),
             "-filter_complex",
-            f"[1:a]apad=pad_dur={pad:.3f}[a]",
+            f"{head_filter},apad=pad_dur={pad:.3f}[a]",
             "-map", "0:v",
             "-map", "[a]",
             "-c:v", "copy",
@@ -735,9 +758,16 @@ def process_one(job):
             shutil.copyfile(voice_mp3, mixed_mp3)
             log(f"  BGM disabled — using voice-only: {mixed_mp3.stat().st_size} bytes")
 
-        # 3. Merge with video
+        # 3. Merge with video. If a cover scene is present, audio must
+        # start at video time COVER_DURATION_SEC — otherwise the first
+        # audible word plays during the cover (no subtitle yet), and the
+        # user hears audio ~0.8s ahead of any visual cue.
         final_mp4 = final_dir / "final.mp4"
-        merge_video_audio(video_mp4, mixed_mp3, final_mp4)
+        cover_json_path = run_dir / "cover.json"
+        audio_delay_sec = COVER_DURATION_SEC if cover_json_path.exists() else 0.0
+        if audio_delay_sec > 0:
+            log(f"  cover detected → audio delay {audio_delay_sec}s")
+        merge_video_audio(video_mp4, mixed_mp3, final_mp4, audio_delay_sec=audio_delay_sec)
         log(f"  merge done: {final_mp4.stat().st_size} bytes")
 
         # 4. Probe

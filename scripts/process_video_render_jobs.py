@@ -52,7 +52,7 @@ DEFAULT_FPS = 15
 
 # 封面 splash 持续时间。cover scene 在视频最前面占 COVER_DURATION_SEC，
 # 后续内容场景的 scene_times / subtimes 整体后移这个量。
-COVER_DURATION_SEC = 2.5
+COVER_DURATION_SEC = 0.8
 
 # cover_fallback 在脚本没拿到 LLM 写的 cover.json 时，用这些反常识/转折
 # 词找钩子句当主标。顺序按"钩子强度"排，前面的优先。
@@ -2013,14 +2013,8 @@ def build_image_composition_html(
                 f'<div class="bg" id="bg-{html_i}" '
                 f'style="background-image:url(images/{media_filename});"></div>'
             )
-        hook_html = ""
-        if i == 0 and media_kind not in ("kinetic", "image_overlay", "video_overlay"):
-            hook_text = wrap_caption_lines(chunk, max_chars=16, max_lines=2)
-            hook_html = (
-                '<div class="hook" id="opening-hook">'
-                + "".join(f"<div>{escape_html(line)}</div>" for line in hook_text)
-                + "</div>"
-            )
+        # v3.2: opening-hook (大字首句覆盖) 已删除 — 用户反馈首场景只显示
+        # 图+ sub 即可, hook 文字跟 sub-2-1 重复, 视觉冗余。
         # Emit one <div class="subtitle"> per sub-caption slot
         sub_html_parts = []
         for j, lines in enumerate(subcaptions):
@@ -2036,7 +2030,6 @@ def build_image_composition_html(
             f'    <div id="scene-{html_i}" class="clip" data-track-index="1" '
             f'data-start="{start}" data-duration="{per_this}">\n'
             f'      {media_html}\n'
-            f'      {hook_html}\n'
             f'      ' + "\n      ".join(sub_html_parts) + '\n'
             f'    </div>'
         )
@@ -2045,21 +2038,6 @@ def build_image_composition_html(
             timeline_tweens.append(
                 f"tl.to('#bg-{html_i}', {{ scale: {kb['scale']}, x: {kb['x']}, y: {kb['y']}, "
                 f"ease: 'none', duration: {per_this} }}, {start});"
-            )
-        if i == 0 and media_kind not in ("kinetic", "image_overlay", "video_overlay"):
-            # cover_t shifts hook absolute times by COVER when cover is
-            # present, so the opening hook fires at the start of the
-            # *content* (post-cover), not the video.
-            timeline_tweens.append(
-                f"tl.fromTo('#opening-hook', {{ opacity: 0, scale: 0.92 }}, "
-                f"{{ opacity: 1, scale: 1, duration: 0.25, ease: 'power3.out' }}, {cover_t + 0.1:.2f});"
-            )
-            # Hook is a flash of attention-grabbing text in the first
-            # 1.5s; sub-caption 1 takes over from there. Was 4.5s, which
-            # covered the first 1-2 sub-captions and caused visible
-            # overlap with regular subtitles.
-            timeline_tweens.append(
-                f"tl.to('#opening-hook', {{ opacity: 0, duration: 0.25 }}, {cover_t + 1.5:.2f});"
             )
         # 场景间 wipe 已删除（lint 冲突），靠 Ken Burns + 字幕淡出做切换
         # Sub-caption slots: fade in at slot start, fade out 0.3s before slot end.
