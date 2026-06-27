@@ -150,9 +150,11 @@ aligner 用 `。！？!?.` 切句。ASCII 句点 `.` 在切分集里因为它确
 - **重跑渲染** → `POST /api/jobs/<id>/render`：status → `ready_script` + touch `.video-render-trigger`。
 - **重跑配音** → `POST /api/jobs/<id>/narrate`：status → `rendered` + touch `.video-narrate-trigger`。
 
-## 音色注册（跟 voice-studio 共享）
+## 音色注册
 
-`/root/.openclaw/workspace/skills/voice-studio/scripts/voice_registry.json` 是 TTS 音色配置的单一来源。视频线默认音色：
+`scripts/voice_registry.json` 是 video-studio 自己的**独立副本**，不是从 voice-studio 共享过来的。`process_video_narrate_jobs.py:43` 通过 `VOICE_STUDIO_DIR`（默认 = `Path(__file__).parents[1]` = video-studio 自己的 skill 根）定位本地副本；可用 `VOICE_STUDIO_DIR` 环境变量改指 voice-studio 的 skill 根来共享那边的脚本（向后兼容路径，向 d1645a4 之前）。
+
+视频线默认音色：
 
 - **id**：`Chinese (Mandarin)_Kind-hearted_Antie`
 - **显示名**：热心大婶
@@ -177,8 +179,8 @@ aligner 用 `。！？!?.` 切句。ASCII 句点 `.` 在切分集里因为它确
 
 ## 跨 skill 依赖
 
-- `scripts/minimax_tts.py`、`minimax_tts_subs.py` 都按绝对路径从 `voice-studio` 读；`scripts/voice_registry.json` 是 video-studio 本地副本（含视频线专属的 Warm_Girl / Kind-hearted_Antie 条目），跟 voice-studio 的 registry 不同步——narrate 守护进程读本地副本
-- systemd 的 `Environment=PATH` 把 `voice-studio/scripts/` 加进去，子进程能解析
+- `scripts/minimax_tts.py`、`minimax_tts_subs.py`、`voice_registry.json` 都是 video-studio 自己的本地副本。`process_video_narrate_jobs.py` 通过 `VOICE_STUDIO_DIR`（默认 = video-studio 自己的 skill 根）解析 `TTS_SCRIPT` / `VOICE_REGISTRY` 路径；`SUBS_SCRIPT` 直接用 `SKILL_DIR` 写死。`VOICE_STUDIO_DIR` 可改指 voice-studio 的 skill 根来共享那边的脚本（向后兼容路径）
+- systemd 的 `Environment=PATH` 同时挂 `video-studio/scripts/` 和 `voice-studio/scripts/` 在 lookup 路径上，给 `python3 ... minimax_tts.py` 风格的子进程调用留共享口子（默认实际跑的是 video-studio 自己的副本）
 - 默认音色变更历史：`Radio_Host` → `azure_yunze_clone` → `Warm_Girl`（`a0b8274`）→ `Kind-hearted_Antie`（本次切换）
 - 密钥：`scripts/minimax_api_key.txt`、`pexels_api_key.txt`、`pixabay_api_key.txt`（`.gitignore` 排除）
 
@@ -198,7 +200,7 @@ scripts/
   align_audio_stable_ts.py        Whisper 强制对齐
   preview_caption_ffmpeg.py       黑底 preview mp4（快速路径）
   preview_caption_video.py        hyperframes preview（preview_only 不用）
-  minimax_tts.py / *_subs.py      TTS 封装（voice-studio 共享）
+  minimax_tts.py / *_subs.py      TTS 封装（video-studio 独立副本，详见"跨 skill 依赖"节）
   pixabay_image.py / pixabay_video.py / pixabay_cache.py  Pixabay 素材抓取+缓存（主源）
   pexels_image.py / pexels_video.py  Pexels 旧接口（保留兼容，部分 job 还在用）
   extract_scene_keywords.py       关键词抽取（场景-关键词映射）
@@ -215,7 +217,7 @@ scripts/
   test_script_length_bounds.py    单测：脚本长度 MIN/MAX 校验（6/6）
   test_script_repair.py           单测：脚本修复启发式（5/5）
   test_skip_pexels.py             单测：pexels skip 决策（7/7）
-  voice_registry.json             跟 voice-studio 共享
+  voice_registry.json             video-studio 独立副本（不是 voice-studio 共享）
 systemd/                        3 个 path unit + 3 个 oneshot service
 templates/                      index.html, login.html, video_placeholder.html
 jobs/video/                     活跃 job JSON（一个 v_*.json 一条）
