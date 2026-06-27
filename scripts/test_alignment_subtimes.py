@@ -183,6 +183,114 @@ def test_re_clamp_actually_truncates():
         _cleanup_run_dir(job_id, run_dir)
 
 
+def _multi_clause_alignment() -> tuple[dict, str]:
+    """Build an alignment with 2 long sentences, both crossing scene
+    boundaries. Each sentence is > max_chars so _split_sentence_into_subs
+    splits at PUNCT boundaries into multiple subs.
+
+    Sentence [0] (4 PUNCT clauses at 0-9s, 8 subs after split):
+      "前段,中段,后段,末段,第五段,第六段,第七段,第八段。"
+      → 8 subs at roughly 1.125s each, straddle scene boundary at 5s
+        (subs 0-3 in scene [0, 5], subs 4-7 in scene [5, 9]).
+    Sentence [1] (1 PUNCT at 9-12s):
+      "第一句。"
+    """
+    script = "前段,中段,后段,末段,第五段,第六段,第七段,第八段。第一句。"
+    n = len(script)
+    sent0_text = "前段,中段,后段,末段,第五段,第六段,第七段,第八段。"
+    sent1_text = "第一句。"
+    sent0_dur = 9.0
+    sent1_start = sent0_dur
+    sent1_dur = 3.0
+    sent0_step = sent0_dur / len(sent0_text)
+    sent1_step = sent1_dur / len(sent1_text)
+    char_entries = []
+    t = 0.0
+    for i, c in enumerate(script):
+        if i == len(sent0_text):
+            t = sent1_start
+        dur = sent0_step if i < len(sent0_text) else sent1_step
+        char_entries.append({"c": c, "start": round(t, 3), "end": round(t + dur, 3), "word": c})
+        t += dur
+    return {
+        "voice_seconds": sent0_dur + sent1_dur,
+        "script_chars": n,
+        "model": "test",
+        "word_count": n,
+        "char_count_aligned": n,
+        "sentence_count": 2,
+        "sentences": [
+            {"text": sent0_text, "start": 0.0, "end": sent0_dur,
+             "word_indices": list(range(len(sent0_text)))},
+            {"text": sent1_text, "start": sent1_start, "end": sent1_start + sent1_dur,
+             "word_indices": list(range(len(sent0_text), n))},
+        ],
+        "chars": char_entries,
+    }, script
+
+
+def test_subs_clipped_to_scene_boundaries():
+    """For a multi-clause sentence straddling the scene boundary, every
+    sub in every scene must have slot_start >= scene_start AND slot_end
+    <= scene_end. Earlier code only clamped the LAST sub's end; the
+    SUB_GAP first-sub clamp coincidentally fixed short sentences but
+    leaves multi-clause sentences with subs that violate scene bounds.
+
+    Also asserts no two scenes share the exact same sub text (the
+    "two scenes each show a segment of the same sentence" duplication
+    bug the user reported — when sentence [0] is 9s long and crosses
+    a 5s boundary, both scene[0] and scene[1] would currently show all
+    8 of its subs, with text repeated in both scenes).
+    """
+    aln, script = _multi_clause_alignment()
+    scene_times = [(0.0, 5.0), (5.0, 9.0), (9.0, 12.0)]
+    job_id, run_dir = _make_run_dir(aln, script)
+    try:
+        runs_root = pv.SKILL_DIR / "runs"
+        runs_root.mkdir(exist_ok=True)
+        link = runs_root / job_id
+        if link.exists() or link.is_symlink():
+            link.unlink()
+        link.symlink_to(run_dir)
+        try:
+            chunks = pv.split_script_to_cards(script, n_cards=3)
+            subtimes = pv._load_alignment_subtimes(
+                job_id, scene_times, chunks, width=1920, height=1080,
+            )
+            assert subtimes is not None
+            assert len(subtimes) == len(scene_times)
+            for scene_i, (s_start, s_end) in enumerate(scene_times):
+                scene_subs = subtimes[scene_i]
+                for s_lines, a, b in scene_subs:
+                    assert a >= s_start - 0.001, (
+                        f"scene[{scene_i}] sub {s_lines!r} starts before "
+                        f"scene_start: start={a:.3f} < scene_start={s_start:.3f}"
+                    )
+                    assert b <= s_end + 0.001, (
+                        f"scene[{scene_i}] sub {s_lines!r} ends past "
+                        f"scene_end: end={b:.3f} > scene_end={s_end:.3f}"
+                    )
+            # No text overlap across scenes: a sub's first-line text
+            # should not appear in two scenes' sub lists.
+            seen: dict[str, int] = {}
+            for scene_i, scene_subs in enumerate(subtimes):
+                for s_lines, _, _ in scene_subs:
+                    key = s_lines[0] if s_lines else ""
+                    if not key:
+                        continue
+                    if key in seen and seen[key] != scene_i:
+                        raise AssertionError(
+                            f"sub text {key!r} appears in both scene "
+                            f"{seen[key]} and scene {scene_i} — cross-scene "
+                            f"duplicate (the 'both scenes show same text' bug)"
+                        )
+                    seen[key] = scene_i
+        finally:
+            link.unlink()
+    finally:
+        _cleanup_run_dir(job_id, run_dir)
+
+
 # ────────────────────────────────────────────────────────────────────
 
 def main():
@@ -190,6 +298,7 @@ def main():
         test_overlapping_sentence_included,
         test_re_clamp_truncation_only,
         test_re_clamp_actually_truncates,
+        test_subs_clipped_to_scene_boundaries,
     ]
     passed = 0
     failed = 0

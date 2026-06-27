@@ -1257,36 +1257,40 @@ def _load_alignment_subtimes(job_id, scene_times, chunks, width=DEFAULT_WIDTH, h
             out.append([])
             continue
 
-        # Enforce MIN_SUB_DUR floor. If a sub is shorter than MIN_SUB_DUR,
-        # extend it; shift the next sub's start forward accordingly. This
-        # keeps the sub legible when TTS reads very fast (e.g. 16 chars
-        # in 1.15s after the 30s mark).
-        adjusted: list[tuple[list[str], float, float]] = []
-        for k, (s_lines, a, b) in enumerate(scene_subs):
-            if b - a < MIN_SUB_DUR:
-                b = a + MIN_SUB_DUR
-            adjusted.append((s_lines, a, b))
-        # Re-clamp last sub to scene_end — only when the sub actually
-        # extends past the scene end. The previous code checked `last_a
-        # < scene_end` and unconditionally set the end to scene_end,
-        # which is a *fill* not a clamp: it made the last sub display
-        # long after the voice had moved on (e.g. sentence [0]'s tail
-        # persisted to the end of a 10s preview even though the next
-        # sentence started at 4.88s). The correct behavior is truncation
-        # only — if the sub fits inside the scene, leave its end alone
-        # and let the gap to scene_end be silence.
-        last_lines, last_a, last_b = adjusted[-1]
-        if last_b > scene_end:
-            adjusted[-1] = (last_lines, last_a, scene_end)
+        # Start-based sub assignment: a sub belongs to the scene where
+        # its start time falls. Without this filter, the same long
+        # sentence (e.g. 8-clause comma chain) straddling a scene
+        # boundary would be appended to BOTH scene N and scene N+1's
+        # subs, with the same text appearing in two scenes (the
+        # "both scenes each show a segment" duplication bug the user
+        # reported). Then clip each kept sub to scene boundaries and
+        # drop subs that don't fit even with MIN_SUB_DUR.
+        clipped_subs: list[tuple[list[str], float, float]] = []
+        for s_lines, a, b in scene_subs:
+            if a < scene_start or a >= scene_end:
+                # Sub belongs to a different scene (or exactly the next
+                # scene's start). Skip from this one.
+                continue
+            # Clip to scene bounds.
+            a2 = max(a, scene_start)
+            b2 = min(b, scene_end)
+            if b2 - a2 < MIN_SUB_DUR:
+                # Sub too short after clip; try extending the end only
+                # if it still fits inside the scene.
+                if a2 + MIN_SUB_DUR <= scene_end:
+                    b2 = a2 + MIN_SUB_DUR
+                else:
+                    continue  # doesn't fit
+            clipped_subs.append((s_lines, a2, b2))
+        if not clipped_subs:
+            out.append([])
+            continue
         # Apply SUB_GAP: each sub's start is the previous sub's end + gap
-        # (skipping the first sub, which is clamped to scene_start).
+        # (skipping the first sub, which is already at/after scene_start).
         out_subs: list[tuple[list[str], float, float]] = []
         prev_end = scene_start
-        for k, (s_lines, a, b) in enumerate(adjusted):
-            if k == 0:
-                a = scene_start
-            else:
-                a = max(a, prev_end + SUB_GAP)
+        for s_lines, a, b in clipped_subs:
+            a = max(a, prev_end + SUB_GAP)
             if a >= b:
                 a = b - 0.01  # avoid 0-width
             out_subs.append((s_lines, a, b))
