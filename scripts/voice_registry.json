@@ -13,6 +13,13 @@
     "enabled": true,
     "primary_use": "voice"
   },
+  "Chinese (Mandarin)_Kind-hearted_Antie": {
+    "display_name": "热心大婶",
+    "default_speed": 1.0,
+    "description": "MiniMax 系统音色 (中文女声, 热心/邻家大婶)",
+    "enabled": true,
+    "primary_use": "voice"
+  },
   "azure_yunze_clone": {
     "display_name": "云泽克隆",
     "default_speed": 0.9,
