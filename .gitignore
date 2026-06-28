@@ -39,3 +39,7 @@ tmp/
 *.tmp
 .DS_Store
 backups/
+
+# SDD scratch (per user: gitignore spec/plan/progress)
+docs/superpowers/
+.superpowers/
