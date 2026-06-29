@@ -2199,6 +2199,7 @@ def build_image_composition_html(
       font-weight: 700; line-height: 1.2; text-align: center;
       letter-spacing: 2px; color: #f0f0f0;
       max-width: 80%;
+      white-space: nowrap;        /* v3.3: keep sub single-line, mirror .cover-main */
       text-shadow:
         -3px -3px 0 #000, 3px -3px 0 #000,
         -3px 3px 0 #000, 3px 3px 0 #000,

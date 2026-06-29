@@ -401,6 +401,45 @@ def test_cover_no_audio_delay_when_no_cover():
     assert "anull" in fc, f"no cover → anull passthrough expected, got: {fc}"
 
 
+def test_cover_sub_single_line_nowrap():
+    """v3.3: .cover-sub must have white-space: nowrap to keep sub single-line.
+
+    Without this, sub text exceeding max-width:80% wraps to 2 lines in
+    portrait (1080x1920, 80% = 864px) or when CJK fonts render wider than
+    1em on real Chrome. .cover-main already has nowrap — the asymmetry
+    was the bug.
+    """
+    # Read the full HTML to get the embedded <style> block. render_cover_layout
+    # only returns the cover <div>, so we go through build_image_composition_html
+    # (with a real sub) to pull the style.
+    cover = {
+        "main": "糖不是调味品",
+        "main_highlight": [1, 3],
+        "sub": "一吨西瓜榨出的糖不到甘蔗的三分之一",
+    }
+    fake_subtimes = [
+        [("c0", 0.0, 5.0)],
+        [("c1", 5.0, 10.0)],
+    ]
+    fake_chunks = ["c0 text", "c1 text"]
+    fake_media = [("image", Path("/tmp/scene_1.jpg"))] * 2
+    cover_with_img = dict(cover, _image_path="/tmp/scene_0.jpg")
+    html = rv.build_image_composition_html(
+        fake_media, fake_chunks, total_duration=10.0,
+        width=1920, height=1080, cover=cover_with_img, subtimes=fake_subtimes,
+    )
+    # The CSS is inside a f-string so {{ and }} are escaped in the source but
+    # the rendered HTML has single { and }. Assert against the rendered form.
+    assert ".cover-sub" in html, "no .cover-sub rule in HTML"
+    # Find the .cover-sub block and check it has nowrap
+    import re as _re
+    m = _re.search(r"\.cover-sub\s*\{([^}]*)\}", html)
+    assert m, "could not extract .cover-sub CSS block"
+    css = m.group(1)
+    assert "white-space: nowrap" in css or "white-space:nowrap" in css, \
+        f".cover-sub must have white-space: nowrap, got: {css!r}"
+
+
 if __name__ == "__main__":
     tests = [
         test_render_cover_layout_basic,
@@ -428,6 +467,7 @@ if __name__ == "__main__":
         test_cover_fallback_picks_hook_highlight,
         test_cover_audio_padded_when_delay_set,
         test_cover_no_audio_delay_when_no_cover,
+        test_cover_sub_single_line_nowrap,
     ]
     failed = 0
     for t in tests:
