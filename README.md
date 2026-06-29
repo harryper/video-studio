@@ -167,7 +167,7 @@ runs/{job_id}/                  每个 job 的产物：
 
 `scripts/minimax_tts.py`、`minimax_tts_subs.py`、`voice_registry.json` 都按绝对路径从 `voice-studio` 读，不通过 import。systemd 的 `Environment=PATH` 把 `voice-studio/scripts/` 加进去，子进程能解析。
 
-默认音色（app.py 新建 job 时写）：`Chinese (Mandarin)_Warm_Girl`（显示名：温暖少女，speed 1.0）。 旧版本曾用 `Radio_Host` / `azure_yunze_clone`，已在 a0b8274 切到 Warm_Girl。jobs/video/ 里创建时间早于 a0b8274 的 job JSON 里仍显式持有旧 voice，需要重新提交才会用 Warm_Girl。
+默认音色（app.py 新建 job 时写）：`Chinese_casual_instructor_nv1`（显示名：活力讲师，speed 1.15）。 旧版本曾用 `Radio_Host` / `azure_yunze_clone` / `Warm_Girl` / `Kind-hearted_Antie`，已在 a0b8274 切到 Warm_Girl 后再次切换。jobs/video/ 里创建时间早于 a0b8274 的 job JSON 里仍显式持有旧 voice，需要重新提交才会用当前默认。
 
 `scripts/minimax_api_key.txt`、`pexels_api_key.txt`、`pixabay_api_key.txt` 持有密钥，被 `.gitignore` 排除。
 

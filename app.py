@@ -302,8 +302,8 @@ def create_job():
             'preview_only': preview_only,
         },
         'audio': {
-            'voice': 'Chinese (Mandarin)_Kind-hearted_Antie',
-            'voice_display_name': '热心大婶',
+            'voice': 'Chinese_casual_instructor_nv1',
+            'voice_display_name': '活力讲师',
             'speed': 1.15,
             'bgm_enabled': False,
             'bgm_volume': 0.15,

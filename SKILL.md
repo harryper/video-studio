@@ -156,13 +156,13 @@ aligner 用 `。！？!?.` 切句。ASCII 句点 `.` 在切分集里因为它确
 
 视频线默认音色：
 
-- **id**：`Chinese (Mandarin)_Kind-hearted_Antie`
-- **显示名**：热心大婶
+- **id**：`Chinese_casual_instructor_nv1`
+- **显示名**：活力讲师
 - **speed**：1.15（app.py 创建 job 时硬编码；registry default_speed 仍为 1.0）
 
-`app.py:305` 新建 job 时写这个默认；`process_video_narrate_jobs.py:592` 的 fallback 也同步成同一个 id。旧版本曾用 `Radio_Host` / `azure_yunze_clone` / `Warm_Girl`（`a0b8274` 切到 Warm_Girl，本次切到 Kind-hearted_Antie）。`jobs/video/` 里创建时间早于本次切换的 job JSON 仍显式持有旧 voice，需要重新提交才会用新默认。
+`app.py:305` 新建 job 时写这个默认；`process_video_narrate_jobs.py:592` 的 fallback 也同步成同一个 id。旧版本曾用 `Radio_Host` / `azure_yunze_clone` / `Warm_Girl` / `Kind-hearted_Antie`（`a0b8274` 切到 Warm_Girl，后续切到 Kind-hearted_Antie，本次切到 `casual_instructor_nv1`）。`jobs/video/` 里创建时间早于本次切换的 job JSON 仍显式持有旧 voice，需要重新提交才会用新默认。
 
-可用音色清单见 `scripts/voice_registry.json`（`Radio_Host` / `Warm_Girl` / `Kind-hearted_Antie` / `azure_yunze_clone`）。
+可用音色清单见 `scripts/voice_registry.json`（`Radio_Host` / `Warm_Girl` / `Kind-hearted_Antie` / `casual_instructor_nv1` / `azure_yunze_clone`）。
 
 ## 渲染性能（本 VM，2026-06）
 
@@ -181,7 +181,7 @@ aligner 用 `。！？!?.` 切句。ASCII 句点 `.` 在切分集里因为它确
 
 - `scripts/minimax_tts.py`、`minimax_tts_subs.py`、`voice_registry.json` 都是 video-studio 自己的本地副本。`process_video_narrate_jobs.py` 通过 `VOICE_STUDIO_DIR`（默认 = video-studio 自己的 skill 根）解析 `TTS_SCRIPT` / `VOICE_REGISTRY` 路径；`SUBS_SCRIPT` 直接用 `SKILL_DIR` 写死。`VOICE_STUDIO_DIR` 可改指 voice-studio 的 skill 根来共享那边的脚本（向后兼容路径）
 - systemd 的 `Environment=PATH` 同时挂 `video-studio/scripts/` 和 `voice-studio/scripts/` 在 lookup 路径上，给 `python3 ... minimax_tts.py` 风格的子进程调用留共享口子（默认实际跑的是 video-studio 自己的副本）
-- 默认音色变更历史：`Radio_Host` → `azure_yunze_clone` → `Warm_Girl`（`a0b8274`）→ `Kind-hearted_Antie`（本次切换）
+- 默认音色变更历史：`Radio_Host` → `azure_yunze_clone` → `Warm_Girl`（`a0b8274`）→ `Kind-hearted_Antie` → `casual_instructor_nv1`（本次切换）
 - 密钥：`scripts/minimax_api_key.txt`、`pexels_api_key.txt`、`pixabay_api_key.txt`（`.gitignore` 排除）
 
 ## 目录布局

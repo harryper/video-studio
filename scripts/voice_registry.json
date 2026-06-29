@@ -20,6 +20,13 @@
     "enabled": true,
     "primary_use": "voice"
   },
+  "Chinese_casual_instructor_nv1": {
+    "display_name": "活力讲师",
+    "default_speed": 1.0,
+    "description": "MiniMax 系统音色 (中文, 活力讲师, casual 节奏)",
+    "enabled": true,
+    "primary_use": "voice"
+  },
   "azure_yunze_clone": {
     "display_name": "云泽克隆",
     "default_speed": 0.9,
