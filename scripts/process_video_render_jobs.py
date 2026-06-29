@@ -2636,11 +2636,28 @@ def main():
                 log(f"throttling: previous run {gap:.1f}s ago, sleeping {wait:.1f}s")
                 time.sleep(wait)
 
+        # Drain pending jobs. Was `for _ in range(1)` — left siblings
+        # stuck when the picked job's updated_at wasn't the newest.
+        # Render is heavier than script/narrate (puppeteer + ffmpeg can
+        # take 30+ min per scene-render), so cap at 6h and let the next
+        # oneshot finish the tail. FIFO order via pending_jobs sort;
+        # "1 concurrent" stays guaranteed by flock + oneshot.
         processed = 0
-        for _ in range(1):  # max 1 per run
+        DRAIN_MAX_SECONDS = 6 * 3600
+        INTER_JOB_COOLDOWN = 30        # render is heavy; bigger gap
+        drain_started = time.time()
+        while True:
+            if time.time() - drain_started >= DRAIN_MAX_SECONDS:
+                log(f"drain window elapsed ({DRAIN_MAX_SECONDS}s), exiting with jobs possibly pending")
+                if pending_jobs() and RENDER_TRIGGER.exists():
+                    RENDER_TRIGGER.write_text(str(time.time()), encoding="utf-8")
+                    log(f"re-touched {RENDER_TRIGGER.name} to resume in next run")
+                break
             jobs = pending_jobs()
             if not jobs:
                 break
+            if processed > 0:
+                time.sleep(INTER_JOB_COOLDOWN)
             process_one(jobs[0])
             processed += 1
 

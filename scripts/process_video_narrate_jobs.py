@@ -851,11 +851,29 @@ def main():
                 log(f"throttling: previous run {gap:.1f}s ago, sleeping {wait:.1f}s")
                 time.sleep(wait)
 
+        # Drain pending jobs (was `for _ in range(1)` — left siblings stuck
+        # when the picked job's updated_at wasn't the newest). Now: pull
+        # oldest first (FIFO via pending_jobs' updated_at sort) until the
+        # queue is empty, while staying inside one flock/oneshot to keep
+        # the "1 concurrent" invariant. Cap on wall-clock so a runaway
+        # queue can't pin a systemd slot forever; at cap, re-touch the
+        # trigger so the next oneshot iteration picks up the rest.
         processed = 0
-        for _ in range(1):
+        DRAIN_MAX_SECONDS = 6 * 3600   # 6h cap; matches render below
+        INTER_JOB_COOLDOWN = 10        # let transient locks/temp IO settle
+        drain_started = time.time()
+        while True:
+            if time.time() - drain_started >= DRAIN_MAX_SECONDS:
+                log(f"drain window elapsed ({DRAIN_MAX_SECONDS}s), exiting with jobs possibly pending")
+                if pending_jobs() and NARRATE_TRIGGER.exists():
+                    NARRATE_TRIGGER.write_text(str(time.time()), encoding="utf-8")
+                    log(f"re-touched {NARRATE_TRIGGER.name} to resume in next run")
+                break
             jobs = pending_jobs()
             if not jobs:
                 break
+            if processed > 0:
+                time.sleep(INTER_JOB_COOLDOWN)
             process_one(jobs[0])
             processed += 1
 
