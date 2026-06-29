@@ -30,38 +30,40 @@ def test_has_four_sections():
     print(f"✓ all 4 required sections present: {required}")
 
 
-def test_meme_table_has_5_rows():
-    """段子表 must have exactly 5 user-approved 段子."""
+def test_meme_table_has_9_rows():
+    """段子表 must have exactly 9 [xingzhe] user-curated 段子."""
     content = MEMES_FILE.read_text(encoding="utf-8")
-    # Count table rows starting with "| N |" where N is 1-5
+    # Count table rows starting with "| N |" where N is 1-9
     import re
-    rows = re.findall(r"^\|\s*[1-5]\s*\|", content, re.MULTILINE)
-    assert len(rows) == 5, f"expected 5 meme rows, got {len(rows)}"
-    print(f"✓ meme table has 5 rows: {rows}")
+    rows = re.findall(r"^\|\s*[1-9]\s*\|", content, re.MULTILINE)
+    assert len(rows) == 9, f"expected 9 [xingzhe] meme rows, got {len(rows)}"
+    print(f"✓ meme table has 9 [xingzhe] rows: {rows}")
 
 
 def test_all_memes_non_empty():
-    """Each of the 5 memes must have non-empty content."""
+    """Each of the 9 [xingzhe] memes must have non-empty content."""
     content = MEMES_FILE.read_text(encoding="utf-8")
-    # Required seed phrases that must appear
+    # Required [xingzhe] 段子 / 种子 phrases that must appear
     required_phrases = [
-        "魏忠贤",          # 段子 #1
-        "无后为大",        # 段子 #1 PUN
-        "夏侯惇",          # 段子 #2
-        "一眼就相中",      # 段子 #2 PUN
-        "路易十六",        # 段子 #3/#4/#5
-        "替我出头",        # 段子 #3 PUN
-        "摸不着头脑",      # 段子 #4 PUN
-        "禁止调头",        # 段子 #5 PUN
+        "夏侯惇鉴宝",      # 段子 #1
+        "一眼假",          # 段子 #1 PUN
+        "恐怖直立猿",      # 段子 #2
+        "地球online",      # 段子 #3
+        "一眼望不到边",    # 段子 #4 PUN
+        "四目相对",        # 段子 #6 PUN
+        "太监开会",        # 段子 #7
+        "无稽之谈",        # 段子 #7 PUN
+        "路易十六的生日",  # 段子 #8
+        "过到头了",        # 段子 #8 PUN
     ]
     for phrase in required_phrases:
         assert phrase in content, f"missing required phrase: {phrase}"
-    print(f"✓ all 8 required phrases present across 5 memes")
+    print(f"✓ all 10 required [xingzhe] phrases present across 9 memes")
 
 
 if __name__ == "__main__":
     test_file_exists()
     test_has_four_sections()
-    test_meme_table_has_5_rows()
+    test_meme_table_has_9_rows()
     test_all_memes_non_empty()
     print("\n所有 reference-memes.md 测试通过")
