@@ -48,6 +48,17 @@ SCHEMA_VERSION = 2
 # prompt can't drift apart.
 SPEC_FIELDS = ("subject", "shot", "mood", "color_palette", "avoid")
 
+# cat-doctor shotlist (director daemon writes this). Schema v1.
+# 6 类构图 (quote 不进配图); 红/橙/蓝 3 色批注.
+SHOTLIST_SCHEMA_VERSION = 1
+SHOTLIST_COMPOSITIONS = ("hook", "data-compare", "process", "rank", "twist", "metaphor")
+SHOTLIST_ANNOTATION_COLORS = ("red", "orange", "blue")
+# negative_prompt 默认值: 挡 cat-doctor 反例画风 (cat-doctor style-dna.md §反例)。
+SHOTLIST_DEFAULT_NEGATIVE_PROMPT = (
+    "精致扁平插画, 商业插画, PPT 流程图, 萌系 Q 版, 拟真照片, "
+    "3D 渲染, kawaii, chibi, cute, adorable, blush"
+)
+
 
 SYSTEM_PROMPT = (
     "You extract structured visual specs for a short-form video.\n"
