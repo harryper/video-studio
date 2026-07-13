@@ -1,0 +1,10 @@
+[Unit]
+Description=Process pending video-studio director jobs (script → shotlist, stage 2 of 4)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/root/opc/video-studio
+Environment=PATH=/usr/local/bin:/usr/bin:/bin:/root/opc/video-studio/scripts
+ExecStart=/usr/bin/python3 /root/opc/video-studio/scripts/process_video_director_jobs.py

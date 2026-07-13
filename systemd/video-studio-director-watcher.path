@@ -1,0 +1,9 @@
+[Unit]
+Description=Watch video-studio director trigger and run host-side director writer
+
+[Path]
+PathModified=/root/opc/video-studio/.video-director-trigger
+Unit=video-studio-director-watcher.service
+
+[Install]
+WantedBy=multi-user.target
