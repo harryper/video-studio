@@ -2,7 +2,7 @@
 Description=Watch video-studio narrate trigger and run host-side narrate writer
 
 [Path]
-PathModified=/root/.openclaw/workspace/skills/video-studio/.video-narrate-trigger
+PathModified=/root/opc/video-studio/.video-narrate-trigger
 Unit=video-studio-narrate-watcher.service
 
 [Install]

@@ -2,7 +2,7 @@
 Description=Watch video-studio script trigger and run host-side script writer
 
 [Path]
-PathModified=/root/.openclaw/workspace/skills/video-studio/.video-script-trigger
+PathModified=/root/opc/video-studio/.video-script-trigger
 Unit=video-studio-script-watcher.service
 
 [Install]

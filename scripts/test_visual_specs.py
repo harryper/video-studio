@@ -277,9 +277,8 @@ def test_real_chunks_aligned_when_pad_trailing():
             # Stub _call_llm to return 4 specs (one per real chunk)
             captured = {}
 
-            def fake_call(theme_arg, chunks_arg, session_key):
+            def fake_call(theme_arg, chunks_arg):
                 captured["n_chunks"] = len(chunks_arg)
-                captured["session"] = session_key
                 return [
                     {"subject": "stopwatch", "shot": "extreme close-up",
                      "mood": "urgent", "color_palette": "black + red",
@@ -341,7 +340,7 @@ def test_wrong_count_falls_back_to_all_empty():
             chunks = ["a", "b", "c", "d", "e"]  # 5 real chunks
             theme = "test"
 
-            def fake_call(theme_arg, chunks_arg, session_key):
+            def fake_call(theme_arg, chunks_arg):
                 return [{"subject": "x"}]  # only 1, should mismatch
 
             orig = ek._call_llm
@@ -377,7 +376,7 @@ def test_llm_returns_full_length():
             chunks = ["前 0.5 秒钩住你", "中间刺激", "", ""]
             theme = "test"
 
-            def fake_call(theme_arg, chunks_arg, session_key):
+            def fake_call(theme_arg, chunks_arg):
                 # LLM returns 4 specs (matches chunks length) — sometimes
                 # it pads its own for blank chunks
                 return [
@@ -429,7 +428,7 @@ def test_llm_intermittent_wrong_count_retries():
             theme = "test"
             calls = {"count": 0}
 
-            def fake_call(theme_arg, chunks_arg, session_key):
+            def fake_call(theme_arg, chunks_arg):
                 calls["count"] += 1
                 if calls["count"] == 1:
                     # First call returns 1 spec (intermittent bad case)

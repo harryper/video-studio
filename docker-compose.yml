@@ -8,19 +8,14 @@ services:
     volumes:
       # Source code bind-mounted for live edits during dev.
       - .:/app
-      # Read-only access to workspace for cross-skill scripts (e.g. Pexels key
-      # fallback) and to public-downloads for any future publishing.
-      - /root/.openclaw/workspace:/root/.openclaw/workspace:ro
       # Host-side logs are picked up by logrotate on the host.
       - /var/log/video-studio:/app/logs
-      # Read-only access to voice-studio for shared scripts (minimax_tts.py,
-      # voice_registry.json). The narrate daemon reads these by absolute
-      # path ($VOICE_STUDIO_DIR), not via the container's PATH.
-      - /root/.openclaw/workspace/skills/voice-studio:/root/.openclaw/workspace/skills/voice-studio:ro
     environment:
       - PYTHONUNBUFFERED=1
       - PATH=/usr/bin:/bin:/usr/local/bin
-      - VOICE_STUDIO_DIR=/root/.openclaw/workspace/skills/voice-studio
+      # Shared scripts (minimax_tts.py, voice_registry.json) now live in the
+      # project itself; point VOICE_STUDIO_DIR at the app root.
+      - VOICE_STUDIO_DIR=/app
       - GUNICORN_WORKERS=2
       - GUNICORN_TIMEOUT=60
       - GUNICORN_GRACEFUL_TIMEOUT=10

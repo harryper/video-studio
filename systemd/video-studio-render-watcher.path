@@ -2,7 +2,7 @@
 Description=Watch video-studio render trigger and run host-side render writer
 
 [Path]
-PathModified=/root/.openclaw/workspace/skills/video-studio/.video-render-trigger
+PathModified=/root/opc/video-studio/.video-render-trigger
 Unit=video-studio-render-watcher.service
 
 [Install]

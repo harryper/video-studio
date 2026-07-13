@@ -9,10 +9,11 @@ import re
 from collections import Counter
 from pathlib import Path
 
-TX_DIR = Path("/root/.openclaw/workspace/skills/video-studio/benchmarks/xingzhe/transcripts")
-MANIFEST = Path("/root/.openclaw/workspace/skills/video-studio/benchmarks/xingzhe/manifest.json")
-OUT_MD = Path("/root/.openclaw/workspace/skills/video-studio/benchmarks/xingzhe/analysis.md")
-OUT_JSON = Path("/root/.openclaw/workspace/skills/video-studio/benchmarks/xingzhe/stats.json")
+_BENCH_DIR = Path(__file__).resolve().parent
+TX_DIR = _BENCH_DIR / "transcripts"
+MANIFEST = _BENCH_DIR / "manifest.json"
+OUT_MD = _BENCH_DIR / "analysis.md"
+OUT_JSON = _BENCH_DIR / "stats.json"
 
 # Regex patterns
 # Bare number (with possible decimals)

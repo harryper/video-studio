@@ -33,14 +33,13 @@ import hashlib
 import json
 import os
 import re
-import subprocess
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import llm_client
+
 SKILL_DIR = Path(__file__).resolve().parent.parent
-WORKSPACE_DIR = SKILL_DIR.parent
-NODE = Path("/usr/bin/node")
-OPENCLAW = Path("/usr/lib/node_modules/openclaw/openclaw.mjs")
 RUNS_DIR = SKILL_DIR / "runs"
 
 SCHEMA_VERSION = 2
@@ -343,40 +342,25 @@ def _find_outermost_array(text: str) -> str | None:
     return None
 
 
-def _call_llm(theme: str, chunks: list[str], session_key: str) -> list[dict] | None:
+def _call_llm(theme: str, chunks: list[str]) -> list[dict] | None:
+    """Single Messages-API call via llm_client. Returns parsed specs or None."""
     prompt = build_spec_prompt(theme, chunks)
-    # openclaw agent has no --system flag — prepend system prompt to user message
-    full_message = f"[系统指令]\n{SYSTEM_PROMPT}\n\n[用户]\n{prompt}"
-    cmd = [
-        str(NODE), str(OPENCLAW), "agent",
-        "--agent", "main",
-        "--session-key", session_key,
-        "--message", full_message,
-        "--thinking", "off",
-        "--json",
-        "--timeout", "120",
-    ]
     try:
-        result = subprocess.run(
-            cmd, cwd=str(WORKSPACE_DIR), text=True,
-            capture_output=True, timeout=150,
+        text = llm_client.complete(
+            system=SYSTEM_PROMPT,
+            user=prompt,
+            max_tokens=4096,
+            timeout=180.0,
         )
-    except (subprocess.TimeoutExpired, OSError) as e:
+    except Exception as e:
         print(f"[extract_scene_keywords] LLM call failed: {e}", file=sys.stderr)
         return None
 
-    out = (result.stdout or "") + "\n" + (result.stderr or "")
-    # DEBUG: trace what the LLM actually returned
-    print(
-        f"[extract_scene_keywords] LLM raw stdout ({len(result.stdout or '')} chars): "
-        f"{(result.stdout or '')[:200]!r}",
-        file=sys.stderr,
-    )
-    parsed = _parse_spec_array(out)
+    parsed = _parse_spec_array(text)
     if parsed is None:
         print(
-            f"[extract_scene_keywords] parser returned None. Combined tail (300 chars): "
-            f"{out[-300:]!r}",
+            f"[extract_scene_keywords] parser returned None. "
+            f"LLM tail (300 chars): {text[-300:]!r}",
             file=sys.stderr,
         )
     return parsed
@@ -438,11 +422,9 @@ def extract_visual_specs(
         if cached is not None and len(cached) == len(chunks):
             return cached
 
-    # New session-key namespace so we don't pollute the v1 kw session and
-    # so a v2 answer can't be confused with a stale v1 one if the cache
-    # file gets corrupted.
-    session_key = f"agent:main:video-studio-vspec-{job_id}"
-    result = _call_llm(theme, chunks, session_key)
+    # Direct Claude Messages-API call (no agent, no session). Retry just
+    # hits the API again — cheap and stateless.
+    result = _call_llm(theme, chunks)
 
     # Re-align LLM output with the original chunks list. The LLM's
     # behavior is inconsistent: it sometimes drops trailing empty (pad)
@@ -469,7 +451,7 @@ def extract_visual_specs(
             f"(expected {n_real} non-empty or {len(chunks)} total); retrying once",
             file=sys.stderr,
         )
-        result_retry = _call_llm(theme, chunks, session_key + "-retry")
+        result_retry = _call_llm(theme, chunks)
         if _fits(result_retry):
             print(
                 f"[extract_scene_keywords] retry OK: got {len(result_retry)} specs",

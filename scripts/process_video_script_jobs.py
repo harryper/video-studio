@@ -3,7 +3,9 @@
 
 Mirrors the structure of process_pending_voice_jobs.py:
 - Triggered by .video-script-trigger (systemd path unit)
-- Dispatches an `openclaw agent` sub-session to write the narration script
+- Calls Claude directly (via llm_client) to generate the narration script
+  + cover; the daemon writes runs/<id>/script.txt + runs/<id>/cover.json
+  itself (no agent, no file-writing tools)
 - On success: status -> ready_script, then touches .video-render-trigger
 
 Differences from voice writer:
@@ -17,21 +19,20 @@ Differences from voice writer:
 import fcntl
 import json
 import os
-import subprocess
+import re
 import sys
 import time
 from datetime import datetime
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import llm_client
+
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
-WORKSPACE_DIR = SKILL_DIR.parents[1]
-OPENCLAW_ROOT = WORKSPACE_DIR.parent
 JOBS_DIR = SKILL_DIR / "jobs" / "video"
-RUNS_DIR = Path("/root/.openclaw/workspace/skills/video-studio/runs")
+RUNS_DIR = SKILL_DIR / "runs"
 LOCK_PATH = SKILL_DIR / ".video-script-writer.lock"
-NODE = Path("/usr/bin/node")
-OPENCLAW = Path("/usr/lib/node_modules/openclaw/openclaw.mjs")
 # Char-count tolerance band. The style guide targets 560-640 chars
 # (see reference-style-video.md, 抖音科普短片节奏更紧凑), but LLM output
 # is noisy — widened to 300-1200 to support both short-form (300+ chars
@@ -77,7 +78,7 @@ SCRIPT_TRIGGER = SKILL_DIR / ".video-script-trigger"
 RENDER_TRIGGER = SKILL_DIR / ".video-render-trigger"
 NARRATE_TRIGGER = SKILL_DIR / ".video-narrate-trigger"
 LAST_RUN_MARKER = SKILL_DIR / ".video-script-writer.lastrun"
-REFERENCE_STYLE = Path("/root/.openclaw/workspace/skills/video-studio/reference-style-video.md")
+REFERENCE_STYLE = SKILL_DIR / "reference-style-video.md"
 LOG_FILE = Path("/var/log/video-studio/video-script-watcher.log")
 
 
@@ -267,20 +268,36 @@ def pending_jobs():
     return sorted(jobs, key=lambda j: j.get("created_at", ""))
 
 
+def _read_reference_caches():
+    """Load style + memes reference text once per call (small files,
+    ~14KB combined). Missing files yield empty string — caller logs."""
+    parts = []
+    for label, path in (("reference-style-video.md", REFERENCE_STYLE), ("reference-memes.md", SKILL_DIR / "reference-memes.md")):
+        try:
+            txt = path.read_text(encoding="utf-8")
+        except OSError:
+            log(f"reference missing: {path}")
+            txt = ""
+        parts.append(f"## {label}\n\n{txt}")
+    return "\n\n".join(parts)
+
+
 def build_prompt(job):
-    job_id = job["id"]
+    """Single-completion prompt. Returns instruction text for the LLM to
+    produce JSON {script, cover} in one response. The daemon does the
+    file writes itself; the LLM is just the prose engine."""
     theme = job.get("theme") or ""
-    ref_path = REFERENCE_STYLE
-    ref_relpath = str(ref_path.relative_to(WORKSPACE_DIR)) if ref_path.exists() else "(reference-style-video.md missing)"
     target_seconds = int(job.get("render", {}).get("duration_sec") or DEFAULT_TARGET_SECONDS)
     min_chars, max_chars = script_length_bounds(target_seconds)
     target_chars = int(target_seconds * ESTIMATED_CHARS_PER_SECOND)
+    references = _read_reference_caches()
     return (
-        f"为 video-studio Web 项目写一段约 {target_seconds} 秒 ({target_chars} 字) 的短视频旁白稿。\n"
+        f"为 video-studio 写一段约 {target_seconds} 秒 ({target_chars} 字) 的短视频旁白稿。\n"
         f"主题：{theme}\n\n"
-        f"## 参考风格 + 参考热梗\n"
-        f"先读 {ref_relpath} (风格主结构) 和 reference-memes.md (热梗库)。\n"
+        f"## 参考风格 + 参考热梗 (已直接附在下面, 不需要再读文件)\n"
         f"风格 = 骨架, 热梗 = 装饰, 装饰不能挤掉骨架。\n\n"
+
+        f"{references}\n\n"
 
         f"{MEME_GUIDE}\n\n"
 
@@ -288,7 +305,7 @@ def build_prompt(job):
 
         f"## 硬约束 (优先级最高)\n"
         f"1. 字数硬上限 {max_chars} 字, 目标 {target_chars} 字. **超过 1500 字直接判失败**, 不要尝试写 3000+ 字长稿\n"
-        f"2. 纯文本输出, 不要 markdown / 编号 / 标题 / 空行分隔\n"
+        f"2. 脚本正文 (script 字段) 纯文本, 不要 markdown / 编号 / 标题 / 空行分隔\n"
         f"3. 开头 60-90 字内必须出现: 反问 + 立即给答案 / 假设 + 给答案 / 反常识判断 (三选一, 必命中 A 主力 70%)\n"
         f"4. 中段每 10-15 秒一个钩子: 具体数字 / 段子化破折号 / 数学对比 / 跨学科引用 (四选一)\n"
         f"5. 数字密度: >= {int(target_chars/100)} 个数字 (含中文) 在全文, 数学对比 >=2 个 (A 倍 / 约等于)\n"
@@ -299,27 +316,25 @@ def build_prompt(job):
         f"10. 写完自检: 5 个连续名词并排? 同一句式用了 2 次? 有治愈/松弛/温柔吗? 字数是否在 {min_chars}-{max_chars} 区间? 段子是否服务主题 (没末尾冷知识/bonus)? 任何一项不通过就重写\n"
         f"11. 不要尝试用 N 段完整 4 层结构堆长度, 一段层只算一个反转, 4 层反转 + 中间段子 = 600-800 字就够\n\n"
 
-        f"## 执行\n"
-        f"1. 写入 skills/video-studio/runs/{job_id}/script.txt\n"
-        f"2. 更新 jobs/video/{job_id}.json: status=\"ready_script\", script=<全文>, "
-        f"script_meta={{char_count, target_seconds, actual_seconds=null}}, error=null\n"
-        f"3. job_id={job_id}\n\n"
-
-        f"## 纪律\n"
-        f"- 首次写入即终稿, 不要反复自我检查 / 改写 / 重写\n"
-        f"- 不要把全文写在 thinking 或最终回复里, 必须用文件写入工具落盘\n"
-        f"- 文稿字数应符合动态区间: {min_chars}-{max_chars} 字 (基于 {target_seconds}s 目标时长)\n"
-        f"- 不要生成音频, 不要发布, 不要给用户发消息\n"
-        f"- 最终回复只允许一句话: '已写入 <路径>'"
+        f"## 输出格式 (严格遵守)\n"
+        f"只输出一个 JSON 对象, 不要 markdown fence, 不要任何额外说明文字:\n"
+        f"{{\n"
+        f'  "script": "<完整旁白稿, {min_chars}-{max_chars} 字, 纯文本, 无 markdown>",\n'
+        f'  "cover": {{\n'
+        f'    "main": "<4-6 字钩子主标>",\n'
+        f'    "main_highlight": [<start>, <end>],\n'
+        f'    "sub": "<12-18 字副标, 不剧透主标>"\n'
+        f"  }}\n"
+        f"}}\n\n"
+        f"main_highlight 是 main 的 [start, end) 半开区间, 标出**最关键的钩眼词**; 高亮必须是 1 个语义完整的词 (见 COVER_INSTRUCTIONS §main_highlight 4 类钩眼词), 不准是 0.5 个词; start > 0 (不准落在第 1 字), end < len(main) (不准落在最后 1 字), end - start <= 3.\n"
+        f"一次写完即终稿。不要在 JSON 前后加任何 prose / markdown / 解释。"
     )
 
 
 def build_repair_prompt(job, current_script, min_chars, max_chars):
-    """Targeted length-repair prompt: feed the existing script back to the
-    agent with a directional nudge (too short → expand, too long → trim),
-    instead of discarding the whole attempt and re-rolling from scratch.
-    """
-    job_id = job["id"]
+    """Targeted length-repair prompt. The LLM is asked to return a JSON
+    {"script": <revised>, "cover": <unchanged or re-validated>}; the daemon
+    writes the file. Replaces the old agent that self-overwrote script.txt."""
     target_seconds = int(job.get("render", {}).get("duration_sec") or DEFAULT_TARGET_SECONDS)
     target_chars = int(target_seconds * ESTIMATED_CHARS_PER_SECOND)
     cur_len = len(current_script)
@@ -327,13 +342,13 @@ def build_repair_prompt(job, current_script, min_chars, max_chars):
         gap = min_chars - cur_len
         direction = (
             f"当前 {cur_len} 字, 比下限少 {gap} 字. 在保留开头钩子 / 中段钩子 / 结尾风格的前提下, "
-            f"补充具体数字 / 段子化金句 / 跨学科细节来扩写, 不要堆砌空洞名词, 不要改写已有好句子. "
+            f"补充具体数字 / 段子化金句 / 跨学科细节来扩写, 不要堆砌空洞名词, 不要改写已有好句子."
         )
     else:
         gap = cur_len - max_chars
         direction = (
             f"当前 {cur_len} 字, 比上限多 {gap} 字. 删减冗余 / 重复 / 空洞处, 保留所有钩子和数字密度, "
-            f"不要改写已有好句子. "
+            f"不要改写已有好句子."
         )
     return (
         f"修复一篇已写好的视频旁白稿, 只调长度不改风格.\n"
@@ -346,123 +361,142 @@ def build_repair_prompt(job, current_script, min_chars, max_chars):
         f"2. 纯文本, 不要 markdown / 编号 / 标题 / 空行\n"
         f"3. 保留原有钩子结构 (反问/假设/反常识开场, 中段数字/段子, 非开放式结尾)\n"
         f"4. 只在必要处增删, 不要整篇重写\n\n"
-        f"## 执行\n"
-        f"1. 覆盖写入 skills/video-studio/runs/{job_id}/script.txt (整篇终稿, 含已改部分)\n"
-        f"2. 最终回复只允许一句话: '已修复 <路径>'\n"
-        f"3. 不要生成音频, 不要发布, 不要给用户发消息\n"
+        f"## 输出格式 (严格遵守)\n"
+        f"只输出一个 JSON 对象, 不要 markdown fence:\n"
+        f'{{"script": "<修订稿全文>", "cover": {{"main": "...", "main_highlight": [s, e], "sub": "..."}}}}\n'
+        f"cover 字段如未改动可保持原值, 但必须重新验证 main_highlight 是否仍是语义完整的钩眼词."
     )
 
 
-def run_agent(job):
+def _parse_script_response(text):
+    """Extract {"script": str, "cover": dict} from one LLM response.
+
+    Tolerant of: prose around the JSON, a wrapper envelope, a JSON array
+    that contains the dict as its single element, truncation. Returns
+    (script, cover, error_msg). On any parse failure, script=None and
+    cover=None; caller decides whether to retry or fall back.
+    """
+    if not text:
+        return None, None, "empty LLM response"
+
+    def _as_cover(d):
+        if not isinstance(d, dict):
+            return None
+        return d
+
+    # 1) Direct JSON object
+    for candidate in _iter_json_objects(text):
+        if isinstance(candidate, dict) and isinstance(candidate.get("script"), str):
+            return candidate["script"], _as_cover(candidate.get("cover")), None
+        # Some models return a top-level array containing one such object
+    # 2) Direct JSON array
+    try:
+        arr = json.loads(text)
+    except json.JSONDecodeError:
+        arr = None
+    if isinstance(arr, list) and arr:
+        for item in arr:
+            if isinstance(item, dict) and isinstance(item.get("script"), str):
+                return item["script"], _as_cover(item.get("cover")), None
+    # 3) Recover a truncated object: if the response looks like `{"script": "..."`
+    #     but was cut off, take whatever script field we can extract.
+    # The regex matches any backslash escape OR any non-quote/non-backslash char,
+    # so the captured group is the literal JSON string value with \" and \\
+    # still present — just unescape those two, don't run unicode_escape on
+    # UTF-8 bytes (that mojibakes CJK).
+    m = re.search(r'"script"\s*:\s*"((?:\\.|[^"\\])*)', text)
+    if m:
+        recovered = m.group(1).replace('\\"', '"').replace("\\\\", "\\")
+        return recovered, None, "truncated JSON, recovered partial script"
+    return None, None, f"could not parse script JSON; tail={text[-200:]!r}"
+
+
+def _iter_json_objects(text):
+    """Yield candidate dicts parsed from text, in order of likelihood.
+
+    Cheap strategies first: direct json.loads, then naive regex extraction
+    of `{...}` blocks (validated by json.loads)."""
+    try:
+        v = json.loads(text)
+        if isinstance(v, dict):
+            yield v
+        return
+    except json.JSONDecodeError:
+        pass
+    # Naive scan for {...} blocks — won't handle nested braces, but the
+    # expected shape is flat enough that this catches the common cases.
+    for m in re.finditer(r"\{[^{}\n]{2,2000}\}", text):
+        try:
+            v = json.loads(m.group(0))
+            if isinstance(v, dict):
+                yield v
+        except json.JSONDecodeError:
+            continue
+
+
+def _write_run_artifacts(job_id, script_text, cover):
+    """Write runs/<id>/script.txt + runs/<id>/cover.json. Daemon is the
+    sole writer; the LLM only generates text."""
+    run_dir = RUNS_DIR / job_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "script.txt").write_text(script_text, encoding="utf-8")
+    if cover is not None:
+        (run_dir / "cover.json").write_text(
+            json.dumps(cover, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+
+def generate_script(job):
+    """One Messages-API call. Returns (script_text, cover_dict, error_msg).
+
+    Writes script.txt + cover.json as a side effect so callers can read
+    them back on retry without round-tripping through the LLM."""
     prompt = build_prompt(job)
-    attempt = int(job.get("writer_attempt") or 0) + 1
-    job["writer_attempt"] = attempt
-    save_job(job)
-    cmd = [
-        str(NODE),
-        str(OPENCLAW),
-        "agent",
-        "--agent",
-        "main",
-        "--session-key",
-        f"agent:main:video-studio-writer-{job['id']}-a{attempt}",
-        "--message",
-        prompt,
-        "--thinking",
-        "off",
-        "--json",
-        "--timeout",
-        "300",  # 5 min — much shorter than voice writer's 900s
-    ]
-    return subprocess.run(
-        cmd,
-        cwd=str(WORKSPACE_DIR),
-        text=True,
-        capture_output=True,
-        timeout=360,
-    )
-
-
-def _session_jsonl_path(job_id):
-    """Same lookup pattern as voice writer."""
-    sessions_index = OPENCLAW_ROOT / "agents" / "main" / "sessions" / "sessions.json"
-    if not sessions_index.exists():
-        return None
     try:
-        with sessions_index.open(encoding="utf-8") as f:
-            data = json.load(f)
-    except (OSError, json.JSONDecodeError):
-        return None
-    needle = f"agent:main:video-studio-writer-{job_id}"
-    info = data.get(needle) or {}
-    session_file = info.get("sessionFile")
-    if not session_file:
-        return None
-    return Path(session_file)
+        text = llm_client.complete(
+            system=(
+                "You are a 抖音 short-video script writer for the video-studio project. "
+                "Follow every constraint literally. Output a single JSON object and nothing else."
+            ),
+            user=prompt,
+            max_tokens=4096,
+            timeout=300.0,
+        )
+    except Exception as e:
+        return None, None, f"LLM call failed: {e}"
+
+    script, cover, err = _parse_script_response(text)
+    if script is None:
+        return None, None, err
+
+    validated_cover = parse_cover_validation(cover) if cover else None
+    _write_run_artifacts(job["id"], script, validated_cover)
+    return script, validated_cover, None
 
 
-def scrape_session_error(job_id, result):
-    """Same pattern as voice writer — pull real error from session jsonl."""
-    fallback = ((result.stderr or result.stdout or "").strip() or "unknown error")[:800]
-    fallback_msg = f"openclaw agent failed on host: {fallback}"
-
-    session_file = _session_jsonl_path(job_id)
-    if not session_file or not session_file.exists():
-        return fallback_msg
-
-    last_assistant = None
-    last_texts = []
-    tool_call_count = 0
-    had_tool_error = False
+def generate_script_repair(job, current_script, min_chars, max_chars):
+    """One Messages-API repair pass. Same artifact contract as generate_script."""
+    prompt = build_repair_prompt(job, current_script, min_chars, max_chars)
     try:
-        with session_file.open(encoding="utf-8") as f:
-            for line in f:
-                try:
-                    rec = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                msg = rec.get("message") or {}
-                if msg.get("role") == "assistant":
-                    last_assistant = msg
-                    last_texts = [
-                        c.get("text", "") for c in msg.get("content", [])
-                        if c.get("type") == "text" and c.get("text")
-                    ]
-                    for c in msg.get("content", []):
-                        if c.get("type") == "toolCall":
-                            tool_call_count += 1
-                if msg.get("role") == "toolResult" and msg.get("isError"):
-                    had_tool_error = True
-    except OSError:
-        return fallback_msg
-
-    if not last_assistant:
-        return fallback_msg
-
-    err_msg = last_assistant.get("errorMessage")
-    if err_msg:
-        return f"openclaw agent failed: {err_msg}"
-
-    stop_reason = last_assistant.get("stopReason")
-    if stop_reason == "error" and not err_msg:
-        return f"openclaw agent failed: stopReason=error (no errorMessage); rc={result.returncode}"
-
-    last_text = " ".join(last_texts).strip()
-
-    if stop_reason == "stop" and tool_call_count == 0 and last_text:
-        preview = last_text[:160].replace("\n", " ")
-        return (
-            "openclaw agent returned without any tool call but reported done "
-            f"(model hallucination, last text: \"{preview}\")"
+        text = llm_client.complete(
+            system=(
+                "You revise a 抖音 short-video script for length only. "
+                "Output a single JSON object: {\"script\": ..., \"cover\": ...}. No prose."
+            ),
+            user=prompt,
+            max_tokens=4096,
+            timeout=300.0,
         )
+    except Exception as e:
+        return None, None, f"LLM call failed: {e}"
 
-    if not last_text and not had_tool_error:
-        return (
-            f"openclaw agent returned no assistant text and no tool calls; "
-            f"rc={result.returncode}; stderr={fallback[:200]}"
-        )
-
-    return fallback_msg
+    script, cover, err = _parse_script_response(text)
+    if script is None:
+        return None, None, err
+    validated_cover = parse_cover_validation(cover) if cover else None
+    _write_run_artifacts(job["id"], script, validated_cover)
+    return script, validated_cover, None
 
 
 def parse_cover_from_agent_result(job_id):
@@ -658,15 +692,9 @@ def finalize_from_script_file(job):
 
 
 def repair_script_length(job, min_chars, max_chars):
-    """Targeted length-repair loop.
-
-    When the initial writer produces a script outside [min_chars, max_chars],
-    feed the existing on-disk script back to the agent with a directional
-    nudge instead of erroring out. Reuses writer_attempt as a real retry cap
-    (1 initial + up to MAX_WRITER_ATTEMPTS-1 repairs). Returns True if
-    finalize_from_script_file succeeds (job finalized on disk), False on
-    exhaustion — caller then records the hard error.
-    """
+    """Targeted length-repair loop. Each iteration calls the LLM once and
+    writes runs/<id>/script.txt; finalize re-validates length. writer_attempt
+    is the retry cap (1 initial + up to MAX_WRITER_ATTEMPTS-1 repairs)."""
     current_script = (job.get("script") or "").strip()
     if not current_script:
         script_path = RUNS_DIR / job["id"] / "script.txt"
@@ -681,32 +709,21 @@ def repair_script_length(job, min_chars, max_chars):
         job["status"] = "repairing"
         job["error"] = None
         save_job(job)
-        prompt = build_repair_prompt(job, current_script, min_chars, max_chars)
-        cmd = [
-            str(NODE), str(OPENCLAW), "agent",
-            "--agent", "main",
-            "--session-key", f"agent:main:video-studio-writer-{job['id']}-a{attempt}",
-            "--message", prompt,
-            "--thinking", "off",
-            "--json",
-            "--timeout", "300",
-        ]
-        try:
-            subprocess.run(
-                cmd, cwd=str(WORKSPACE_DIR), text=True,
-                capture_output=True, timeout=360,
-            )
-        except subprocess.TimeoutExpired:
-            log(f"{job['id']} repair attempt {attempt} timed out")
-        # Trust the on-disk artefact: finalize re-validates length and writes
-        # status/script_meta/cover. Returns False if still out of range.
+
+        script, cover, err = generate_script_repair(job, current_script, min_chars, max_chars)
+        if err:
+            log(f"{job['id']} repair attempt {attempt} API error: {err[:200]}")
+        if script is not None:
+            current_script = script
+
         fresh = load_job(job_path(job["id"]))
         if finalize_from_script_file(fresh):
             save_job(fresh)
             log(f"{job['id']} repaired to {len(fresh['script'])} chars (attempt {attempt})")
             return True
-        # Still out of range — read the latest script.txt for the next pass,
-        # since finalize bails before copying script into the job dict.
+
+        # Still out of range — current_script is whatever the last pass
+        # wrote to disk (or the previous version if the LLM failed).
         sp = RUNS_DIR / job["id"] / "script.txt"
         if sp.exists():
             latest = sp.read_text(encoding="utf-8").strip()
@@ -717,110 +734,68 @@ def repair_script_length(job, min_chars, max_chars):
 
 
 def process_one(job):
+    """One script job end-to-end: write status, call LLM, finalize.
+
+    Replaces the old run_agent + scrape_session_error pipeline. The LLM
+    is stateless — no agent session, no file-writing tools. The daemon
+    owns every disk write."""
     job["status"] = "writing"
     job["error"] = None
+    job["writer_attempt"] = int(job.get("writer_attempt") or 0) + 1
     save_job(job)
 
-    try:
-        result = run_agent(job)
-    except subprocess.TimeoutExpired:
-        current = load_job(job_path(job["id"]))
-        if finalize_from_script_file(current):
-            log(f"{job['id']} ready_script from script file after agent timeout")
-            return True
-        current["status"] = "error"
-        current["error"] = "openclaw agent timed out after 360s"
-        save_job(current)
-        log(f"{job['id']} timed out")
+    script, cover, err = generate_script(job)
+    if err:
+        job["status"] = "error"
+        job["error"] = err
+        save_job(job)
+        log(f"{job['id']} generate failed: {err[:300]}")
         return False
 
-    try:
-        updated = load_job(job_path(job["id"]))
-    except (OSError, json.JSONDecodeError) as exc:
-        updated = dict(job)
-        log(f"{job['id']} job json unreadable after agent run: {exc}")
-        if result.returncode == 0 and finalize_from_script_file(updated):
-            log(f"{job['id']} ready from script file after json repair")
-            return True
-        updated["status"] = "error"
-        updated["error"] = f"job json unreadable after agent run: {exc}"
-        save_job(updated)
-        return False
-
-    if updated.get("status") == "ready_script" and (updated.get("script") or "").strip():
-        # preview_only: skip the duration-aware minimum (10s demo scripts are short)
-        is_preview = bool((updated.get("render") or {}).get("preview_only", False))
+    # generate_script already wrote script.txt + cover.json. finalize
+    # reads them back, validates length, computes duration, and writes
+    # the full job record (status=ready_script|rendered, script, script_meta).
+    fresh = load_job(job_path(job["id"]))
+    if not finalize_from_script_file(fresh):
+        # Length miss. Try targeted repair before hard-failing.
+        is_preview = bool((fresh.get("render") or {}).get("preview_only", False))
         if is_preview:
             min_chars = 50
-            max_chars = max(MAX_SCRIPT_CHARS, int((updated.get("render") or {}).get("duration_sec", 10) * ESTIMATED_CHARS_PER_SECOND * 1.3) + 100)
+            max_chars = max(
+                MAX_SCRIPT_CHARS,
+                int((fresh.get("render") or {}).get("duration_sec", 10)
+                    * ESTIMATED_CHARS_PER_SECOND * 1.3) + 100,
+            )
         else:
-            target_seconds = int((updated.get("render") or {}).get("duration_sec") or DEFAULT_TARGET_SECONDS)
+            target_seconds = int((fresh.get("render") or {}).get("duration_sec") or DEFAULT_TARGET_SECONDS)
             min_chars, max_chars = script_length_bounds(target_seconds)
-        if not min_chars <= len(updated["script"]) <= max_chars:
-            # Length miss → targeted repair pass instead of a hard error.
-            # The agent already wrote a usable script; nudge it back into
-            # range (expand/trim) rather than discarding the whole attempt.
+        cur_len = len((fresh.get("script") or "").strip() or script)
+        log(
+            f"{job['id']} length miss {cur_len} "
+            f"(need {min_chars}-{max_chars}, preview={is_preview}), attempting repair"
+        )
+        if repair_script_length(fresh, min_chars, max_chars):
+            fresh = load_job(job_path(job["id"]))
             log(
-                f"{job['id']} length miss {len(updated['script'])} "
-                f"(need {min_chars}-{max_chars}, preview={is_preview}), attempting repair"
+                f"{job['id']} ready_script ({len(fresh['script'])} chars "
+                f"after repair, preview={is_preview})"
             )
-            if repair_script_length(updated, min_chars, max_chars):
-                updated = load_job(job_path(job["id"]))
-                log(
-                    f"{job['id']} ready_script ({len(updated['script'])} chars "
-                    f"after repair, preview={is_preview})"
-                )
-                return True
-            updated = load_job(job_path(job["id"]))
-            final_len = len(updated.get("script") or "")
-            updated["status"] = "error"
-            updated["error"] = (
-                f"script length {final_len} outside "
-                f"{min_chars}-{max_chars} chars (after repair)"
-            )
-            save_job(updated)
-            log(f"{job['id']} failed length check after repair: {final_len} (preview={is_preview})")
-            return False
-        # 封面: agent 直接写 status=ready_script 时也走一遍解析, 缺的字段填 None
-        existing_meta = updated.get("script_meta") or {}
-        if not isinstance(existing_meta, dict) or "cover" not in existing_meta:
-            existing_meta = {
-                **existing_meta,
-                "cover": parse_cover_from_agent_result(job["id"]),
-            }
-            updated["script_meta"] = existing_meta
-            save_job(updated)
-        # preview_only: downgrade from ready_script -> rendered so the
-        # cascade below does not touch the render trigger (which would
-        # kick off the full image-fetch pipeline). Narrate daemon picks
-        # up status=rendered jobs and runs preview_caption_ffmpeg.
-        if is_preview:
-            updated["status"] = "rendered"
-            save_job(updated)
-            log(f"{job['id']} rendered (preview_only, {len(updated['script'])} chars)")
             return True
-        log(f"{job['id']} ready_script ({len(updated['script'])} chars)")
-        return True
+        fresh = load_job(job_path(job["id"]))
+        final_len = len(fresh.get("script") or "")
+        fresh["status"] = "error"
+        fresh["error"] = f"script length {final_len} outside {min_chars}-{max_chars} chars (after repair)"
+        save_job(fresh)
+        log(f"{job['id']} failed length check after repair: {final_len} (preview={is_preview})")
+        return False
 
-    if result.returncode == 0 and finalize_from_script_file(updated):
-        log(f"{job['id']} ready_script from script file")
-        return True
-
-    # Belt-and-suspenders: even when the agent sub-process exits non-zero,
-    # trust the on-disk artefact. If the agent wrote a valid script.txt we
-    # treat it as success — the sub-process returncode can be misleading
-    # when the agent completes via a final write-tool call.
-    if finalize_from_script_file(updated):
-        log(f"{job['id']} ready_script from script file (rc={result.returncode})")
-        return True
-
-    real_err = scrape_session_error(job["id"], result)
-    updated["status"] = "error"
-    updated["error"] = real_err
-    save_job(updated)
-    tail = real_err.replace("\n", " ")[:300]
-    log(f"{job['id']} failed: {tail}")
-    return False
+    save_job(fresh)
+    is_preview = bool((fresh.get("render") or {}).get("preview_only", False))
+    log(
+        f"{job['id']} {fresh['status']} ({len(fresh['script'])} chars, "
+        f"preview={is_preview})"
+    )
+    return True
 
 
 def main():

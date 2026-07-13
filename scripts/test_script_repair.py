@@ -5,6 +5,7 @@ Run: python3 scripts/test_script_repair.py
 """
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import process_video_script_jobs as psj  # noqa: E402
@@ -55,37 +56,24 @@ def test_prompt_includes_current_script():
 
 
 def test_repair_cap_bails_without_agent():
-    """At the attempt cap, repair must return False WITHOUT spawning the
-    agent subprocess — no point burning tokens on an over-budget script."""
+    """At the attempt cap, repair must return False WITHOUT calling the
+    LLM — no point burning tokens on an over-budget script."""
     job = _job(script="短" * 277, writer_attempt=psj.MAX_WRITER_ATTEMPTS)
-    called = {"run": False}
-
-    def _bomb(*a, **k):
-        called["run"] = True
-        raise AssertionError("subprocess.run must not be called at cap")
-
-    orig = psj.subprocess.run
-    psj.subprocess.run = _bomb
-    try:
+    with patch.object(psj.llm_client, "complete") as m:
         ok = psj.repair_script_length(job, 300, 380)
-    finally:
-        psj.subprocess.run = orig
     assert ok is False, "repair at cap must return False"
-    assert not called["run"], "subprocess.run must not be called at cap"
-    print("✓ at MAX_WRITER_ATTEMPTS cap → bail without agent call")
+    assert not m.called, "llm_client.complete must not be called at cap"
+    print("✓ at MAX_WRITER_ATTEMPTS cap → bail without LLM call")
 
 
 def test_repair_no_script_returns_false():
-    """Nothing on disk to repair from → False, no agent call."""
+    """Nothing on disk to repair from → False, no LLM call."""
     job = _job(script="", writer_attempt=1)
     job["id"] = "v_nonexistent0001"  # no script.txt on disk either
-    orig = psj.subprocess.run
-    psj.subprocess.run = lambda *a, **k: (_ for _ in ()).throw(AssertionError("no agent"))
-    try:
+    with patch.object(psj.llm_client, "complete") as m:
         ok = psj.repair_script_length(job, 300, 380)
-    finally:
-        psj.subprocess.run = orig
     assert ok is False, "empty script + no script.txt must return False"
+    assert not m.called, "llm_client.complete must not be called with no source"
     print("✓ empty script + missing script.txt → False (no repair source)")
 
 

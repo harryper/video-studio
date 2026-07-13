@@ -7,7 +7,7 @@ description: "Use when working on voice-studio Web 项目中 mode='video' 任务
 
 技术 id：`video-studio`。面向用户的名字：**video-studio skill**。
 
-本 skill 是 **voice-studio 的兄弟**，不是独立产品。它承载 voice-studio Web 项目中 `mode='video'` 这一条线的**共享风格素材 + 跑批产物**。Web 应用、三个流水线守护进程、UI 都住在 `skills/voice-studio/`，本文档说明视频线独有的部分以及跟 voice-studio 的边界。
+本 skill 是 **voice-studio 的兄弟**，不是独立产品。它承载 voice-studio Web 项目中 `mode='video'` 这一条线的**共享风格素材 + 跑批产物**。Web 应用、三个流水线守护进程、UI 都住在**本仓库**（`app.py` 在根目录）；本文档说明视频线独有的部分以及跟 voice-studio 的边界。
 
 ## 唯一规范流程
 
