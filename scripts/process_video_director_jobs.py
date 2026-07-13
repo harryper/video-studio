@@ -301,3 +301,195 @@ def _read_shotlist_cache(cache_path: Path, script_h: str) -> dict | None:
     if cached.get("script_hash") != script_h:
         return None
     return cached
+
+
+# ── Daemon: load/save/pending/process_one/main/cascade ───────────────
+
+LOG_FILE = SKILL_DIR / "logs" / "video-director-writer.log"
+DIRECTOR_TRIGGER = SKILL_DIR / ".video-director-trigger"
+RENDER_TRIGGER = SKILL_DIR / ".video-render-trigger"
+LOCK_PATH = SKILL_DIR / ".video-director-writer.lock"
+LAST_RUN_MARKER = SKILL_DIR / ".video-director-last-run"
+
+
+def _now_iso() -> str:
+    from datetime import datetime
+    return datetime.now().isoformat(timespec="seconds")
+
+
+def _log(msg: str) -> None:
+    line = f"[video-director-writer] {msg}"
+    print(line, flush=True)
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with LOG_FILE.open("a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+
+def _job_path(job_id: str) -> Path:
+    return JOBS_DIR / f"{job_id}.json"
+
+
+def _load_job(path: Path) -> dict:
+    with path.open(encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _save_job(job: dict) -> None:
+    import os
+    job["updated_at"] = _now_iso()
+    tmp = _job_path(job["id"]).with_suffix(".json.tmp")
+    with tmp.open("w", encoding="utf-8") as f:
+        json.dump(job, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, _job_path(job["id"]))
+
+
+def pending_jobs() -> list[dict]:
+    """director 取 ready_script 的 job (script 已就绪, 等 director 翻译分镜)."""
+    jobs = []
+    if not JOBS_DIR.exists():
+        return jobs
+    for path in JOBS_DIR.glob("v_*.json"):
+        try:
+            job = _load_job(path)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if job.get("mode") == "video" and job.get("status") == "ready_script":
+            jobs.append(job)
+    return sorted(jobs, key=lambda j: j.get("created_at", ""))
+
+
+def _split_script_to_chunks(script: str, n_target: int) -> list[str]:
+    """Reuse render daemon's split, fall back to naive sentence split."""
+    try:
+        from process_video_render_jobs import split_script_to_cards
+        return split_script_to_cards(script, n_cards=n_target)
+    except Exception:
+        import re
+        parts = re.split(r"(?<=[。!?；])", script)
+        parts = [p.strip() for p in parts if p and p.strip()]
+        while len(parts) < n_target:
+            parts.append("")
+        return parts[:n_target]
+
+
+def process_one(job: dict, _llm=call_llm) -> bool:
+    """Translate this job's script → shotlist.json, mark ready_shotlist."""
+    script = (job.get("script") or "").strip()
+    if not script:
+        job["status"] = "error"
+        job["error"] = "director: script empty"
+        _save_job(job)
+        return False
+
+    theme = job.get("theme") or ""
+    duration = int((job.get("render") or {}).get("duration_sec") or 110)
+    n_chunks = max(15, min(22, round(duration / 6)))
+    chunks = _split_script_to_chunks(script, n_target=n_chunks)
+
+    try:
+        shotlist = build_shotlist(job["id"], theme, chunks, _llm=_llm)
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = f"director: build_shotlist failed: {e}"
+        _save_job(job)
+        _log(f"{job['id']} build_shotlist failed: {e}")
+        return False
+
+    job["status"] = "ready_shotlist"
+    job["error"] = None
+    _save_job(job)
+    _log(f"{job['id']} ready_shotlist ({len(shotlist['shots'])} shots, "
+         f"{sum(1 for s in shotlist['shots'] if s)} real)")
+    return True
+
+
+def _scan_and_touch_triggers() -> None:
+    """Cascade: scan ALL v_*.json; touch render trigger when ready_shotlist."""
+    touched = False
+    if not JOBS_DIR.exists():
+        return
+    for jp in JOBS_DIR.glob("v_*.json"):
+        try:
+            cur = _load_job(jp)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if cur.get("mode") != "video":
+            continue
+        st = cur.get("status")
+        if st == "ready_shotlist":
+            RENDER_TRIGGER.touch()
+            touched = True
+            _log(f"  cascade: {cur.get('id', jp.stem)} ready_shotlist → render trigger")
+    if touched:
+        _log(f"touched {RENDER_TRIGGER.name}")
+
+
+def main() -> int:
+    import fcntl
+    import time
+    JOBS_DIR.mkdir(parents=True, exist_ok=True)
+    RUNS_DIR.mkdir(parents=True, exist_ok=True)
+
+    with LOCK_PATH.open("w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            _log("another director is running, skipping")
+            return 0
+
+        if DIRECTOR_TRIGGER.exists():
+            deadline = time.time() + 12
+            while time.time() < deadline:
+                mtime = DIRECTOR_TRIGGER.stat().st_mtime
+                age = time.time() - mtime
+                if age >= 3:
+                    break
+                time.sleep(min(3, max(0.2, 3 - age)))
+
+        if LAST_RUN_MARKER.exists():
+            try:
+                last = float(LAST_RUN_MARKER.read_text(encoding="utf-8").strip() or "0")
+            except ValueError:
+                last = 0
+            gap = time.time() - last
+            if gap < 15 and last:
+                wait = 15 - gap
+                _log(f"throttling: previous run {gap:.1f}s ago, sleeping {wait:.1f}s")
+                time.sleep(wait)
+
+        STARTED = time.time()
+        WINDOW_SECONDS = 7 * 3600
+        EARLY_EXIT_GRACE = 600
+        INTER_JOB_COOLDOWN = 5
+        IDLE_POLL_INTERVAL = 30
+
+        processed = 0
+        while True:
+            if time.time() - STARTED >= WINDOW_SECONDS:
+                _log("window elapsed (7h), exiting")
+                break
+
+            jobs = pending_jobs()
+            if jobs:
+                process_one(jobs[0])
+                processed += 1
+                _scan_and_touch_triggers()
+                time.sleep(INTER_JOB_COOLDOWN)
+                continue
+
+            remaining = WINDOW_SECONDS - (time.time() - STARTED)
+            if remaining < EARLY_EXIT_GRACE:
+                _log("near end of window + idle, exiting cleanly")
+                break
+            _scan_and_touch_triggers()
+            time.sleep(IDLE_POLL_INTERVAL)
+
+        LAST_RUN_MARKER.write_text(f"{time.time()}\n", encoding="utf-8")
+        _log(f"processed={processed} (drained over {(time.time()-STARTED)/60:.1f}min)")
+
+        _scan_and_touch_triggers()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
