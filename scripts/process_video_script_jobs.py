@@ -75,6 +75,7 @@ def script_length_bounds(duration_sec: int) -> tuple[int, int]:
     return min_chars, max_chars
 
 SCRIPT_TRIGGER = SKILL_DIR / ".video-script-trigger"
+DIRECTOR_TRIGGER = SKILL_DIR / ".video-director-trigger"
 RENDER_TRIGGER = SKILL_DIR / ".video-render-trigger"
 NARRATE_TRIGGER = SKILL_DIR / ".video-narrate-trigger"
 LAST_RUN_MARKER = SKILL_DIR / ".video-script-writer.lastrun"
@@ -873,12 +874,14 @@ def main():
 def _scan_and_touch_triggers():
     # Cascade: scan ALL job files (not just the last batch's `jobs`) so
     # we don't miss earlier jobs that became ready_script during the
-    # drain loop. Touch render trigger if any hit ready_script, or
+    # drain loop. Touch director trigger if any hit ready_script, or
     # narrate trigger for preview_only jobs that finished rendering.
     # Called after every process_one and on every idle poll, NOT only at
     # main-loop exit — otherwise ready_script jobs sit idle for the
-    # remaining 6h of the cron window with no render daemon running.
-    touched_render = False
+    # remaining 6h of the cron window with no director daemon running.
+    # 4-stage pipeline: ready_script → director → ready_shotlist → render.
+    # The render trigger is now owned by the director daemon's own cascade.
+    touched_director = False
     touched_narrate = False
     if not JOBS_DIR.exists():
         return
@@ -897,10 +900,10 @@ def _scan_and_touch_triggers():
             NARRATE_TRIGGER.touch()
             touched_narrate = True
         elif st == "ready_script":
-            RENDER_TRIGGER.touch()
-            touched_render = True
-    if touched_render:
-        log(f"touched {RENDER_TRIGGER.name}")
+            DIRECTOR_TRIGGER.touch()
+            touched_director = True
+    if touched_director:
+        log(f"touched {DIRECTOR_TRIGGER.name}")
     if touched_narrate:
         log(f"touched {NARRATE_TRIGGER.name} (preview_only)")
 
