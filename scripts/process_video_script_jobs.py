@@ -79,95 +79,13 @@ DIRECTOR_TRIGGER = SKILL_DIR / ".video-director-trigger"
 RENDER_TRIGGER = SKILL_DIR / ".video-render-trigger"
 NARRATE_TRIGGER = SKILL_DIR / ".video-narrate-trigger"
 LAST_RUN_MARKER = SKILL_DIR / ".video-script-writer.lastrun"
-REFERENCE_STYLE = SKILL_DIR / "reference-style-video.md"
 LOG_FILE = Path("/var/log/video-studio/video-script-watcher.log")
 
 
-# ----- MEME_GUIDE: 5 段子 verbatim use rules (replaces old GOOD_EXAMPLES / HOOK_TEMPLATES / ANTI_PATTERNS) -----
-MEME_GUIDE = '''## [xingzhe] 风格 + 段子 (完整对标, 必读)
-
-完全模仿 benchmarks/xingzhe/analysis.md 的 20 篇顶部视频风格.
-**风格 = 骨架, 段子 = 装饰, 装饰不能挤掉骨架**.
-
-### 1. Hook 公式 (前 5 秒必落地一种)
-
-- **A 反问 + 立即给答案** (主力 70%): "[X 能不能 Y?] 直接说答案, [Z]。"
-- **B 假设 + 立即给答案** (~25%): "如果 X 会怎样? 直接说答案, [Y]。"
-- **C 反问 + 反问** (~5%): "[X?] 难道 [Y] 吗? 唉, [真正原因]。"
-- **D 反常识开场** (5%, 慎用): "你以为 X, 其实 Y。"
-
-禁用: "今天我们来聊聊" / 自介 / 抒情陈述 / 第 1 段铺背景.
-
-### 2. 编号结构 (主题偏职场/经济/常识时强制)
-
-**Setup 必须有 (避免突兀):** Hook → 1 句 setup → 第一笔/第一层/第一波
-- 模板: "**这事咱们拆 [N] 笔算, 从 X 到 Y 全过一遍.**" / "**这场战争分 [N] 波打.**" / "**这事分 [N] 层看.**"
-- Setup 解释"为什么用编号", 10-25 字, **不要在 setup 里给答案**
-
-**3 种编号选型** (按主题):
-- **第一笔 / 第二笔 / 第三笔** (v_bench_new01/03 风格) → 经济/职场/历史账目
-- **第一层 / 第二层 / 第三层** (v_bench_new02 风格) → 系统/机制/制度
-- **第一波 / 第二波 / 第三波** (rank_06 狼群) → 攻击/演化/时间线
-
-**每笔/层/波开场格式**:
-- ✓ 1 句话**直接陈述本段主题** ("第一笔, 25 岁的 P5" / "第一笔, 雨." / "第一笔, 基层市集.")
-- ✓ 然后 80-150 字展开 (用具体数字 + 数学对比 + 段子化比喻)
-- 至少 2 段.
-
-**反模式**:
-- ❌ Hook → 直接跳 "第一笔" (无 setup, 突兀)
-- ❌ "第一笔, 主角不是 X, 是 Y." (反转在开场用 = 浪费段中段尾的反转位)
-- ❌ "第一笔, 来源." (抽象名词, 不具体)
-
-### 3. 中段钩子 (10-15s 一卡, 3-4 个/视频)
-
-4 选 1:
-- 具体数字 + 单位 (数字密度 ≥10/视频)
-- 段子化比喻 (历史人物 + 现代动作)
-- 数学对比 (A 倍 / 1/N / 算一下 → N)
-- 跨学科引用 (三体人 / 地球online / 恐怖直立猿)
-
-**密度要求**: 数字 ≥10, 数学对比 ≥2, 反转词 (但是/其实/真相是) ≥3.
-
-### 4. 段子化金句 4 种结构 (必背)
-
-1. **X——Y 破折号反差** (主力 ≥50%): "夏侯惇鉴宝——一眼假" / "你买的房——其实是 30 年劳动期货"
-2. **重复对称** (≥10%): "灵魂下班了, 肉体还在加班"
-3. **跨作品引用** (≥15%): "三体人觉得这个算法很暴力"
-4. **游戏化/段位化** (≥10%, 必递进 3 段): "恐怖直立猿 → 持械 → 热武器"
-
-### 5. reference-memes.md 9 条段子 (verbatim, 一字不改)
-
-#1 夏侯惇鉴宝——一眼假 | #2 恐怖直立猿 (3 段递进) | #3 地球online
-#4 夏侯惇看司马迁——一眼望不到边 | #5 夏侯惇的不屑 | #6 夏侯惇看杨戬——四目相对
-#7 太监开会——无稽之谈 | #8 路易十六的生日——过到头了 | #9 4 字 meme barrage
-
-使用规则:
-- 9 条全部 verbatim, 不改字不增字不仿写不自创
-- 主题契合才用, 不强求密度 (0-9 条都行)
-- 段子必须服务脚本主题, 严禁末尾/开头/中间单独加"冷知识/彩蛋/bonus"包装
-- 同一种子不重复: 1 个脚本里夏侯惇最多 1 次 (段子 #1/4/5/6 同一脚本最多选 1 条)
-
-### 6. 结尾公式
-
-[最后一段: 用"段子化金句"砸一次核心论点]
-+ (可选) 强反常识金句 (不用 [xingzhe] 的"说出吾名", 我们调性不同)
-禁用: "以上就是…" / "希望对你有帮助" / 治愈系 / 抒情
-
-### 7. 调性边界
-
-- 准: 反派 + 戏说古人 (非正史英雄) + 段子化自创 (地球online)
-- 不准: 悲剧英雄 (项羽/岳飞/关羽) + 革命先烈 + 受害者
-- 不准: 治愈/松弛/愿你/希望 + 抒情 ("把 X 揉进 Y 里")
-- 不准: 公众号爆款词堆砌 (KPI/甲方/群消息 5 个名词并排)
-- 不准: "熬的不是夜, 是 X" 重复
-
-### 8. 跟 style doc 的关系
-
-reference-style-video.md = 主结构 (4 hook + 4 段子 + 编号 + 节奏 + 自检)
-reference-memes.md = 装饰 (9 条 [xingzhe] 段子)
-**装饰不能挤掉主结构**: 数字 ≥10, 数学 ≥2, 反转 ≥3 必须保留.
-'''
+# ----- 脚本正文创作风格已移除 (待定义新风格) -----
+# 旧的 [xingzhe] 段子风格 (MEME_GUIDE) + reference-style-video.md/reference-memes.md
+# 注入已从 build_prompt 中撤下。当前脚本 prompt 只保留中立骨架 (主题 + 长度 +
+# 纯文本 + JSON 输出)。封面 (COVER_INSTRUCTIONS) 及其校验逻辑保留不变。
 
 COVER_INSTRUCTIONS = '''## 封面文案 (独立于正文, 额外生成)
 
@@ -269,20 +187,6 @@ def pending_jobs():
     return sorted(jobs, key=lambda j: j.get("created_at", ""))
 
 
-def _read_reference_caches():
-    """Load style + memes reference text once per call (small files,
-    ~14KB combined). Missing files yield empty string — caller logs."""
-    parts = []
-    for label, path in (("reference-style-video.md", REFERENCE_STYLE), ("reference-memes.md", SKILL_DIR / "reference-memes.md")):
-        try:
-            txt = path.read_text(encoding="utf-8")
-        except OSError:
-            log(f"reference missing: {path}")
-            txt = ""
-        parts.append(f"## {label}\n\n{txt}")
-    return "\n\n".join(parts)
-
-
 def build_prompt(job):
     """Single-completion prompt. Returns instruction text for the LLM to
     produce JSON {script, cover} in one response. The daemon does the
@@ -291,31 +195,16 @@ def build_prompt(job):
     target_seconds = int(job.get("render", {}).get("duration_sec") or DEFAULT_TARGET_SECONDS)
     min_chars, max_chars = script_length_bounds(target_seconds)
     target_chars = int(target_seconds * ESTIMATED_CHARS_PER_SECOND)
-    references = _read_reference_caches()
     return (
         f"为 video-studio 写一段约 {target_seconds} 秒 ({target_chars} 字) 的短视频旁白稿。\n"
         f"主题：{theme}\n\n"
-        f"## 参考风格 + 参考热梗 (已直接附在下面, 不需要再读文件)\n"
-        f"风格 = 骨架, 热梗 = 装饰, 装饰不能挤掉骨架。\n\n"
-
-        f"{references}\n\n"
-
-        f"{MEME_GUIDE}\n\n"
 
         f"{COVER_INSTRUCTIONS}\n"
 
         f"## 硬约束 (优先级最高)\n"
-        f"1. 字数硬上限 {max_chars} 字, 目标 {target_chars} 字. **超过 1500 字直接判失败**, 不要尝试写 3000+ 字长稿\n"
+        f"1. 字数目标 {target_chars} 字, 必须落在 {min_chars}-{max_chars} 字区间, **超过 1500 字直接判失败**\n"
         f"2. 脚本正文 (script 字段) 纯文本, 不要 markdown / 编号 / 标题 / 空行分隔\n"
-        f"3. 开头 60-90 字内必须出现: 反问 + 立即给答案 / 假设 + 给答案 / 反常识判断 (三选一, 必命中 A 主力 70%)\n"
-        f"4. 中段每 10-15 秒一个钩子: 具体数字 / 段子化破折号 / 数学对比 / 跨学科引用 (四选一)\n"
-        f"5. 数字密度: >= {int(target_chars/100)} 个数字 (含中文) 在全文, 数学对比 >=2 个 (A 倍 / 约等于)\n"
-        f"6. 反转密度: 但是/其实/真相是/实际上 类词 >=3 个\n"
-        f"7. 结尾禁止: 开放式问号 / 治愈系 / 以上就是... / 希望对你有帮助 / 抒情\n"
-        f"8. 段子: 从 reference-memes.md 9 条 [xingzhe] 库里挑合适的直接用, 强约束见 MEME_GUIDE §5 (verbatim / 服务主题 / 同种子不重复)\n"
-        f"9. 编号结构: 主题偏职场/经济/常识时, **Hook 后必须先有 1 句 setup** (如 '这事咱们拆三笔算') **再进第一笔/第一层/第一波**, 至少 2 段. 编号开场直接陈述本段主题, **不在编号开场用反转 ('主角不是 X, 是 Y' 浪费钩子, 严禁)**\n"
-        f"10. 写完自检: 5 个连续名词并排? 同一句式用了 2 次? 有治愈/松弛/温柔吗? 字数是否在 {min_chars}-{max_chars} 区间? 段子是否服务主题 (没末尾冷知识/bonus)? 任何一项不通过就重写\n"
-        f"11. 不要尝试用 N 段完整 4 层结构堆长度, 一段层只算一个反转, 4 层反转 + 中间段子 = 600-800 字就够\n\n"
+        f"3. 围绕主题把话讲清楚, 结尾不要开放式问号 / 抒情 / '以上就是...' / '希望对你有帮助'\n\n"
 
         f"## 输出格式 (严格遵守)\n"
         f"只输出一个 JSON 对象, 不要 markdown fence, 不要任何额外说明文字:\n"
@@ -342,13 +231,13 @@ def build_repair_prompt(job, current_script, min_chars, max_chars):
     if cur_len < min_chars:
         gap = min_chars - cur_len
         direction = (
-            f"当前 {cur_len} 字, 比下限少 {gap} 字. 在保留开头钩子 / 中段钩子 / 结尾风格的前提下, "
-            f"补充具体数字 / 段子化金句 / 跨学科细节来扩写, 不要堆砌空洞名词, 不要改写已有好句子."
+            f"当前 {cur_len} 字, 比下限少 {gap} 字. 在保留原意和结构的前提下补充细节扩写, "
+            f"不要堆砌空洞名词, 不要改写已有好句子."
         )
     else:
         gap = cur_len - max_chars
         direction = (
-            f"当前 {cur_len} 字, 比上限多 {gap} 字. 删减冗余 / 重复 / 空洞处, 保留所有钩子和数字密度, "
+            f"当前 {cur_len} 字, 比上限多 {gap} 字. 删减冗余 / 重复 / 空洞处, 保留原意和结构, "
             f"不要改写已有好句子."
         )
     return (
@@ -360,7 +249,7 @@ def build_repair_prompt(job, current_script, min_chars, max_chars):
         f"## 硬约束\n"
         f"1. 输出长度必须在 {min_chars}-{max_chars} 字区间内\n"
         f"2. 纯文本, 不要 markdown / 编号 / 标题 / 空行\n"
-        f"3. 保留原有钩子结构 (反问/假设/反常识开场, 中段数字/段子, 非开放式结尾)\n"
+        f"3. 保留原有内容结构和结尾, 不要开放式问号 / 抒情结尾\n"
         f"4. 只在必要处增删, 不要整篇重写\n\n"
         f"## 输出格式 (严格遵守)\n"
         f"只输出一个 JSON 对象, 不要 markdown fence:\n"

@@ -159,20 +159,26 @@ def test_repair_prompt_contains_directional_nudge():
     print("✓ repair prompt picks correct direction (expand vs trim)")
 
 
-def test_build_prompt_inlines_references():
-    """build_prompt inlines reference-style-video.md + reference-memes.md,
-    not file paths for the LLM to read."""
+def test_build_prompt_is_style_neutral():
+    """build_prompt no longer injects the old [xingzhe] 段子 writing style.
+
+    The script-body style was removed (待定义新风格); only the neutral
+    skeleton (theme + length + JSON) plus the cover instructions remain.
+    """
     job = _make_job(duration_sec=60, theme="糖在二战")
     prompt = psj.build_prompt(job)
-    # Inline check: file content shows up in the prompt
-    assert "## reference-style-video.md" in prompt
-    assert "## reference-memes.md" in prompt
-    assert "恐怖直立猿" in prompt or "夏侯惇" in prompt, "memes content should be inlined"
-    # No more agent-flavoured instructions
-    assert "用文件写入工具落盘" not in prompt
+    # Old style must be gone
+    for leaked in ("reference-style-video.md", "reference-memes.md",
+                   "恐怖直立猿", "夏侯惇", "段子", "第一笔", "MEME_GUIDE"):
+        assert leaked not in prompt, f"removed style leaked into prompt: {leaked}"
+    # Neutral skeleton + cover preserved
+    assert "糖在二战" in prompt, "theme must be in prompt"
+    assert "main_highlight" in prompt, "cover instructions must be preserved"
+    assert '"script"' in prompt, "JSON output format must be present"
+    # No agent-flavoured instructions
     assert "session-key" not in prompt
     assert "openclaw" not in prompt.lower()
-    print("✓ build_prompt inlines references, no agent-flavoured instructions")
+    print("✓ build_prompt is style-neutral (skeleton + cover only)")
 
 
 def main():
@@ -183,7 +189,7 @@ def main():
         test_generate_script_handles_unparseable_response,
         test_generate_script_handles_api_exception,
         test_repair_prompt_contains_directional_nudge,
-        test_build_prompt_inlines_references,
+        test_build_prompt_is_style_neutral,
     ]
     passed = 0
     failed = 0
