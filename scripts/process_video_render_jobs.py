@@ -3,7 +3,7 @@
 
 Mirrors process_pending_voice_jobs.py structure, but:
 - Listens on .video-render-trigger
-- Reads jobs/video/ for ready_script jobs
+- Reads jobs/video/ for ready_shotlist jobs (stage 3 of 4)
 - Renders hyperframes HTML composition to mp4
 - Uploads to R2
 - On success: status -> rendered, touches .video-narrate-trigger
@@ -140,7 +140,7 @@ def pending_jobs():
             job = load_job(path)
         except (OSError, json.JSONDecodeError):
             continue
-        if job.get("mode") != "video" or job.get("status") != "ready_script":
+        if job.get("mode") != "video" or job.get("status") != "ready_shotlist":
             continue
         # Defense in depth: preview_only jobs go straight to narrate for
         # black-bg ffmpeg, skipping the full image-fetch pipeline.
@@ -229,122 +229,70 @@ def render_placeholder(
         chunks = split_script_to_cards(script_text, n_cards=n_scenes)
         chunks_cache.write_text(json.dumps(chunks, ensure_ascii=False), encoding="utf-8")
     log(f"  using {n_scenes} scenes for {len(script_text)} chars ({total_duration}s)")
-    log(f"  generating {len(chunks)} scene images (Pexels → MiniMax → gradient)...")
+    log(f"  generating {len(chunks)} scene images (shotlist → MiniMax → ink-line card)...")
 
-    # 1a. LLM 关键词抽取（一次性批量调用，缓存）
-    # 让"大脑六成是脂肪"配出大脑图而不是饮料杯
-    try:
-        sys.path.insert(0, str(Path(__file__).resolve().parent))
-        from extract_scene_keywords import extract_keywords
-        keywords_per_scene = extract_keywords(job_id, theme, chunks)
-        if any(keywords_per_scene):
-            log(f"  ✓ LLM extracted keywords for {sum(1 for k in keywords_per_scene if k)}/{len(chunks)} scenes")
-    except Exception as e:
-        log(f"  ⚠ keyword extraction failed: {e}; using regex fallback")
-        keywords_per_scene = [[] for _ in chunks]
+    # 1a. Read shotlist.json (stage 2 of 4: director → render).
+    # Falls back to per-chunk build_visual_prompt only when no shotlist.
+    shotlist = _read_shotlist_for_render(job_id, chunks)
+    if shotlist is not None:
+        log(f"  ✓ using shotlist.json ({sum(1 for s in shotlist['shots'] if s)} shots)")
+    else:
+        log("  ⚠ no shotlist.json found — render daemon ran before director; "
+            "falling back to legacy build_visual_prompt (cinematic photography)")
 
     media_items = []
-    # Job seed for Pexels offset (per-scene variety, same job reruns are idempotent)
-    try:
-        job_seed = sum(ord(c) for c in job_id) % 7
-    except Exception:
-        job_seed = 0
     for i, chunk in enumerate(chunks):
-        # Pad chunk (split_script_to_cards trailing ""): skip Pexels and
-        # write a cheap gradient placeholder. build_image_composition_html
-        # also skips pad scenes (their chunk is empty, so the HTML side
-        # never reads these images) — the gradient just keeps media_items
+        img_path = images_dir / f"scene_{i+1}.jpg"
+        # Pad chunk (split_script_to_cards trailing ""): skip image gen and
+        # write a cheap ink-line card. build_image_composition_html also
+        # skips pad scenes (their chunk is empty, so the HTML side never
+        # reads these images) — the placeholder just keeps media_items
         # positionally aligned with chunks.
         if not chunk or not chunk.strip():
-            img_path = images_dir / f"scene_{i+1}.jpg"
             if not (img_path.exists() and img_path.stat().st_size > 5000):
-                create_fallback_image(
-                    img_path, scene_index=i, total=len(chunks),
-                    width=width, height=height,
-                )
-            log(f"  scene {i+1}: pad (gradient placeholder)")
+                render_ink_line_card(img_path, chunk="", annotations=[],
+                                     width=width, height=height)
+            log(f"  scene {i+1}: pad (ink-line placeholder)")
             media_items.append(("image", img_path))
             continue
-        # 优先用 LLM visual spec；spec 缺失时回落到正则启发式
-        spec = keywords_per_scene[i] if i < len(keywords_per_scene) else {}
-        # 2026-06-18 修复:当 spec avoid 含 Pexels 瞎的关键词(hand/face/
-        # text/watermark 等)时,跳过 Pexels 直走 MiniMax —— Pexels API
-        # 不支持 negative keyword,query 怎么调都返回 hands-on-phone。
-        # 同时跳过 Pexels 缓存(否则仍会用到旧的 Pexels 图)。
-        skip_pexels = _spec_skip_pexels(spec)
-        if spec and spec.get("subject"):
-            # spec 驱动:subject 是英文具体可拍物体;shot 整段做 Pexels
-            # 取景修饰(2026-06-18 修复:之前只取 shot.split()[0],丢掉了
-            # "close-up" 这种关键 tag,导致"phone screen ... extreme"返
-            # 回 hands-on-phone 而不是屏幕特写)。
-            parts = [spec["subject"]]
-            shot_full = " ".join((spec.get("shot") or "").split())
-            if shot_full and shot_full.lower() not in spec["subject"].lower():
-                parts.append(shot_full)
-            base_query = " ".join(parts)[:80]
-        else:
-            base_query = extract_pexels_query(chunk, theme, i)
-        offset = (i * 3 + job_seed) % 5
-        # Use real motion footage for roughly one third of the scenes.
-        # skip_pexels 不挡 Pexels 视频:Pexels 视频(stopwatch/抽象动效)
-        # 不像 Pexels 图片那样被"人手"主导,值得保留。Pexels 视频失败时
-        # 自然 fall through 到下面的 MiniMax 静态图路径。
-        if i % 3 == 1:
-            video_path = videos_dir / f"scene_{i+1}.mp4"
-            if (
-                (video_path.exists() and video_path.stat().st_size > 100_000)
-                or try_pixabay_video(base_query, video_path, width, height, offset=offset)
-                or try_pexels_video(base_query, video_path, width, height, offset=offset)
-            ):
-                log(f"  scene {i+1}: stock video (q={base_query!r}, offset={offset})")
-                media_items.append(("video", video_path))
-                continue
-        img_path = images_dir / f"scene_{i+1}.jpg"
-        # cache only honored when not skip_pexels — Pexels cache is "stale"
-        # by new rules when spec says avoid hands/face/text.
-        if not skip_pexels and img_path.exists() and img_path.stat().st_size > 5000:
-            log(f"  scene {i+1}: cached")
-            media_items.append(("image", img_path))
-            continue
-        # 1. Try Pixabay (主源) → Pexels (备)
-        if not skip_pexels and (
-            try_pixabay_image(base_query, img_path, width=width, height=height, offset=offset)
-            or try_pexels_image(base_query, img_path, width=width, height=height, offset=offset)
-        ):
-            log(f"  scene {i+1}: stock (q={base_query!r}, offset={offset})")
-            media_items.append(("image", img_path))
-            continue
-        # 1b. spec 缺失时，再试 chunk 原文本（中文 stock 兜底）
-        if not (spec and spec.get("subject")) and not skip_pexels:
-            fallback_q = extract_pexels_query(chunk, theme, i)
-            if (
-                try_pixabay_image(fallback_q, img_path, width=width, height=height, offset=offset)
-                or try_pexels_image(fallback_q, img_path, width=width, height=height, offset=offset)
-            ):
-                log(f"  scene {i+1}: stock fallback (q={fallback_q!r})")
+        shot = shotlist["shots"][i] if (shotlist and i < len(shotlist["shots"])) else None
+        if shot is not None:
+            # Shotlist-driven path: use director-assembled prompt + neg.
+            # 3 attempts: original → action paraphrase → no annotations.
+            prompt = shot.get("prompt") or build_visual_prompt(
+                chunk, theme, scene_index=i, total=len(chunks),
+            )["prompt"]
+            neg = shot.get("negative_prompt", "")
+            ok = _try_shot_with_retries(
+                img_path, prompt=prompt, negative_prompt=neg,
+                shot=shot, width=width, height=height,
+            )
+            if ok:
+                log(f"  scene {i+1}: shotlist minimax (comp={shot.get('composition')})")
                 media_items.append(("image", img_path))
                 continue
-        # 2. MiniMax (Pexels 跳过时,这里是主路径;否则是 Pexels miss 后的兜底)
-        if skip_pexels:
-            log(
-                f"  scene {i+1}: spec avoid={spec.get('avoid', '')[:60]!r} "
-                f"contains Pexels-blind keywords, going to MiniMax"
+            # All retries failed → ink-line card as final fallback.
+            log(f"  scene {i+1}: shotlist minimax 3x failed, using ink-line card")
+            render_ink_line_card(
+                img_path, chunk=chunk, annotations=shot.get("annotations") or [],
+                width=width, height=height,
             )
-        else:
-            log(f"  scene {i+1}: pexels miss, trying MiniMax...")
-        vp = build_visual_prompt(chunk, theme, scene_index=i, total=len(chunks), spec=spec)
+            media_items.append(("image", img_path))
+            continue
+        # Legacy fallback (no shotlist): old cinematic photography path.
+        # Kept so a render that beats the director daemon still produces
+        # *something*. Once shotlist.json exists, this branch never runs.
+        vp = build_visual_prompt(chunk, theme, scene_index=i, total=len(chunks))
         if try_minimax_image(
             vp["prompt"], img_path, width=width, height=height,
             negative_prompt=vp.get("negative_prompt", ""),
         ):
-            log(f"  scene {i+1}: minimax")
+            log(f"  scene {i+1}: legacy minimax")
             media_items.append(("image", img_path))
             continue
-        # 3. Gradient fallback
-        log(f"  scene {i+1}: both miss, using gradient")
-        create_fallback_image(
-            img_path, scene_index=i, total=len(chunks), width=width, height=height
-        )
+        log(f"  scene {i+1}: legacy minimax failed, using ink-line card")
+        render_ink_line_card(img_path, chunk=chunk, annotations=[],
+                             width=width, height=height)
         media_items.append(("image", img_path))
 
     # 1c. 决定场景类型 — 30% kinetic（数字/短句用 hyperframes 原生渲染）
@@ -445,89 +393,25 @@ def render_placeholder(
 
 
 def try_pexels_video(query, out_path, width, height, timeout=120, offset=0):
-    """Try to fetch a Pexels video clip. Returns True on success."""
-    try:
-        result = subprocess.run(
-            [
-                "python3", str(PEXELS_VIDEO_SCRIPT),
-                "--query", query,
-                "--out", str(out_path),
-                "--w", str(width),
-                "--h", str(height),
-                "--offset", str(offset),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        return (
-            result.returncode == 0
-            and out_path.exists()
-            and out_path.stat().st_size > 100_000
-        )
-    except Exception:
-        return False
+    """REMOVED-STOCK: cat-doctor plan removed stock footage. Kept as no-op
+    stub for callers that still reference it. Returns False always.
+    """
+    return False
 
 
 def try_pexels_image(query, out_path, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT, timeout=30, offset=0):
-    """Try to fetch a Pexels image. Returns True on success."""
-    try:
-        result = subprocess.run(
-            ["python3", str(PEXELS_IMAGE_SCRIPT),
-             "--query", query,
-             "--out", str(out_path),
-             "--w", str(width), "--h", str(height),
-             "--per-page", "3", "--offset", str(offset)],
-            capture_output=True, text=True, timeout=timeout,
-        )
-        if result.returncode == 0 and out_path.exists() and out_path.stat().st_size > 5000:
-            return True
-        return False
-    except Exception:
-        return False
+    """REMOVED-STOCK: cat-doctor plan removed stock images. No-op stub."""
+    return False
 
 
 def try_pixabay_video(query, out_path, width, height, timeout=120, offset=0):
-    """Try to fetch a Pixabay video clip. Returns True on success."""
-    try:
-        result = subprocess.run(
-            [
-                "python3", str(PIXABAY_VIDEO_SCRIPT),
-                "--query", query,
-                "--out", str(out_path),
-                "--w", str(width),
-                "--h", str(height),
-                "--offset", str(offset),
-            ],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-        )
-        return (
-            result.returncode == 0
-            and out_path.exists()
-            and out_path.stat().st_size > 100_000
-        )
-    except Exception:
-        return False
+    """REMOVED-STOCK: cat-doctor plan removed stock footage. No-op stub."""
+    return False
 
 
 def try_pixabay_image(query, out_path, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT, timeout=30, offset=0):
-    """Try to fetch a Pixabay image. Returns True on success."""
-    try:
-        result = subprocess.run(
-            ["python3", str(PIXABAY_IMAGE_SCRIPT),
-             "--query", query,
-             "--out", str(out_path),
-             "--w", str(width), "--h", str(height),
-             "--per-page", "3", "--offset", str(offset)],
-            capture_output=True, text=True, timeout=timeout,
-        )
-        if result.returncode == 0 and out_path.exists() and out_path.stat().st_size > 5000:
-            return True
-        return False
-    except Exception:
-        return False
+    """REMOVED-STOCK: cat-doctor plan removed stock images. No-op stub."""
+    return False
 
 
 def try_minimax_image(
@@ -576,20 +460,11 @@ PEXELS_BLIND_AVOID_KEYWORDS = (
 
 
 def _spec_skip_pexels(spec):
-    """Return True if spec's avoid field has keywords Pexels can't filter.
-
-    用 word-boundary 正则匹配,避免 "handy" 误匹配 "hand"、
-    "non-human" 误匹配 "human" 等子串问题。
+    """REMOVED-STOCK no-op stub. Cat-doctor plan removed Pexels entirely;
+    the new loop reads shotlist.json and goes straight to MiniMax. This
+    signature is preserved so legacy callers still resolve.
     """
-    if not spec:
-        return False
-    avoid = (spec.get("avoid") or "").lower()
-    if not avoid.strip():
-        return False
-    for kw in PEXELS_BLIND_AVOID_KEYWORDS:
-        if re.search(rf"\b{re.escape(kw)}\b", avoid):
-            return True
-    return False
+    return True
 
 
 def extract_pexels_query(chunk_text, theme, scene_index):
@@ -622,10 +497,9 @@ def extract_pexels_query(chunk_text, theme, scene_index):
                     parts.append(theme_short)
         parts.append(hint)
         return " ".join(parts)[:35]
-    # No Chinese in chunk: use theme + hint
-    if theme:
-        return f"{theme} {hint}"[:35]
-    return hint
+    # REMOVED-STOCK: cat-doctor plan removed Pexels. extract_pexels_query
+    # is now a no-op stub. The signature stays so legacy imports still resolve.
+    return chunk_text or theme or "scene"
 
 
 def build_visual_prompt(chunk_text, theme, scene_index, total, spec=None):
@@ -696,6 +570,252 @@ def build_visual_prompt(chunk_text, theme, scene_index, total, spec=None):
         if idx != -1:
             prompt = prompt[:idx].rstrip(" ,")
     return {"prompt": prompt, "negative_prompt": negative}
+
+
+# ── Shotlist-driven render helpers (T9: cat-doctor plan) ─────────────
+
+def _read_shotlist_for_render(job_id: str, chunks: list[str]) -> "dict | None":
+    """Load runs/{job_id}/shotlist.json; align shots to chunks by scene_index.
+
+    Returns the shotlist dict (with shots list aligned to chunks length,
+    None for pad scenes) or None if no shotlist / schema mismatch /
+    script_hash drift.
+    """
+    shotlist_path = VIDEO_RUNS_DIR / job_id / "shotlist.json"
+    if not shotlist_path.exists():
+        return None
+    try:
+        data = json.loads(shotlist_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if data.get("schema_version") != 1:
+        return None
+    raw_shots = data.get("shots") or []
+    aligned = [None] * len(chunks)
+    for s in raw_shots:
+        if not isinstance(s, dict):
+            continue
+        idx = s.get("scene_index")
+        if isinstance(idx, int) and 0 <= idx < len(aligned):
+            aligned[idx] = s
+    return {"shots": aligned, "script_hash": data.get("script_hash", "")}
+
+
+def _try_shot_with_retries(img_path, *, prompt, negative_prompt,
+                           shot, width, height) -> bool:
+    """MiniMax with 3-attempt retry chain (cat-doctor plan §3.1).
+
+      attempt 1: original shot prompt + negative_prompt
+      attempt 2: action paraphrase (replace action verbs with simpler ones)
+      attempt 3: drop annotations entirely (text-rendering is unreliable)
+    """
+    action = (shot.get("action") or "").strip() if shot else ""
+    annotations = (shot.get("annotations") or []) if shot else []
+
+    if try_minimax_image(prompt, img_path, width=width, height=height,
+                         negative_prompt=negative_prompt):
+        return True
+    # Retry #1: paraphrase the action. We rewrite action verbs to simpler
+    # alternatives — MiniMax sometimes fails on compound Chinese actions
+    # ("举起来检查") but succeeds on simple ones ("举"). Keep the rest
+    # of the prompt intact.
+    if action:
+        simpler = _simplify_action(action)
+        retry1 = prompt.replace(action, simpler, 1)
+        if try_minimax_image(retry1, img_path, width=width, height=height,
+                             negative_prompt=negative_prompt):
+            return True
+    # Retry #2: drop annotations (MiniMax text rendering is flaky).
+    if annotations:
+        retry2 = _strip_annotation_lines(prompt)
+        if retry2 and try_minimax_image(retry2, img_path, width=width, height=height,
+                                        negative_prompt=negative_prompt):
+            return True
+    return False
+
+
+def _simplify_action(action: str) -> str:
+    """Paraphrase a Chinese action to a shorter form for MiniMax fallback.
+
+    Tries known-phrase replacements first (high-confidence). Falls back
+    to keeping the first 6 chars + "动" so retry #1 is always different
+    from the original — we always want to give MiniMax a *second* look
+    with altered text.
+    """
+    paraphrases = (
+        ("拿起来检查", "举"),
+        ("举起来检查", "举"),
+        ("翻页查看", "翻"),
+        ("指向目标", "指"),
+        ("抱胸思考", "抱胸"),
+        ("歪头思考", "歪头"),
+    )
+    for old, new in paraphrases:
+        if old in action:
+            return action.replace(old, new)
+    # Generic fallback: keep first 6 chars, append "动" so the retry is
+    # semantically distinct without inventing verbs.
+    return (action[:6] or "动") + "动"
+
+
+def _strip_annotation_lines(prompt: str) -> str:
+    """Remove the annotations block from a cat-doctor prompt.
+
+    The 5-段 structure puts annotations as a dedicated paragraph starting
+    with 'A few small handwritten'. Stripping that paragraph is safer
+    than regex-matching color words (which appear in negative_prompt too).
+    """
+    lines = prompt.split("\n\n")
+    kept = [p for p in lines if not p.lstrip().startswith("A few small handwritten")]
+    return "\n\n".join(kept)
+
+
+def render_ink_line_card(out_path, *, chunk, annotations,
+                         width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT):
+    """Render a minimal ink-line illustration card via PIL.
+
+    Stub: writes a JPEG with the chunk text + annotation colors rendered
+    as simple colored boxes. The PIL drawing logic (cat silhouette, hand-
+    written annotations, white background) lands in T10 — T9 only needs
+    a non-network fallback that produces a viewable image when MiniMax
+    is unreachable.
+    """
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError:
+        out_path.write_bytes(b"")
+        return
+    img = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(img)
+    # Tiny black border so the card is visually identifiable in the
+    # rendered HTML even before T10's full drawing lands.
+    draw.rectangle([2, 2, width - 2, height - 2], outline="black", width=2)
+    # Cat-doctor IP: 喵博士 silhouette in center (per reference/cat-doctor/xiaomiao-ip.md).
+    # Drawn first so chunk text and annotations overlay on top.
+    _draw_cat_silhouette(draw, width, height)
+    if chunk:
+        # Center the chunk text in a box. Pick a font size that fits ~80%
+        # of canvas width — readability over decoration in the stub.
+        font_size = max(28, min(72, width // 18))
+        try:
+            font = ImageFont.truetype(
+                "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+                font_size,
+            )
+        except (OSError, IOError):
+            font = ImageFont.load_default()
+        bbox = draw.textbbox((0, 0), chunk[:80], font=font)
+        tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+        draw.text(((width - tw) / 2, (height - th) / 2 - 40),
+                  chunk[:80], fill="black", font=font)
+    # Render annotations as small color swatches along the bottom so
+    # downstream tooling (and reviewers) can confirm colors survived.
+    color_map = {"red": "#E74C3C", "orange": "#F39C12", "blue": "#3498DB"}
+    y = height - 60
+    x = 40
+    for ann in (annotations or [])[:5]:
+        color = color_map.get(ann.get("color", "blue"), "#3498DB")
+        text = ann.get("text", "")
+        draw.rectangle([x, y, x + 32, y + 32], fill=color, outline="black")
+        if text:
+            try:
+                afont = ImageFont.truetype(
+                    "/usr/share/fonts/google-noto-cjk/NotoSansCJK-Regular.ttc",
+                    20,
+                )
+            except (OSError, IOError):
+                afont = ImageFont.load_default()
+            draw.text((x + 40, y + 4), text[:6], fill="black", font=afont)
+        x += 180
+    img.save(out_path, "JPEG", quality=85)
+
+
+def _draw_cat_silhouette(draw, width, height):
+    """Draw the 喵博士 cat-doctor silhouette in the center of the canvas.
+
+    Per reference/cat-doctor/style-dna.md and xiaomiao-ip.md:
+      - Round head + two triangle ears (top)
+      - Two small dot eyes
+      - Single small round monocle on a thin gold chain
+      - Small bowtie collar
+      - Head/body ratio ~1:1, cat occupies ~30-40% of canvas
+    """
+    # Cat bbox: 30-70% horizontal, 20-75% vertical (head + body).
+    cx = width // 2
+    cat_w = int(width * 0.30)
+    cat_h = int(height * 0.55)
+    head_r = cat_w // 2
+    head_cy = int(height * 0.42)
+    body_top = head_cy + head_r
+    body_bot = body_top + int(cat_h * 0.45)
+
+    # Head (circle)
+    draw.ellipse(
+        [cx - head_r, head_cy - head_r, cx + head_r, head_cy + head_r],
+        outline="black", width=4,
+    )
+    # Two triangle ears (filled, slight wobble per ink-line style)
+    ear_w = int(head_r * 0.5)
+    ear_h = int(head_r * 0.7)
+    # Left ear
+    draw.polygon(
+        [(cx - head_r + 4, head_cy - head_r + 8),
+         (cx - head_r + ear_w, head_cy - head_r - ear_h),
+         (cx - head_r + ear_w * 2, head_cy - head_r + 8)],
+        fill="black",
+    )
+    # Right ear
+    draw.polygon(
+        [(cx + head_r - 4, head_cy - head_r + 8),
+         (cx + head_r - ear_w, head_cy - head_r - ear_h),
+         (cx + head_r - ear_w * 2, head_cy - head_r + 8)],
+        fill="black",
+    )
+    # Two dot eyes
+    eye_r = max(4, head_r // 12)
+    eye_y = head_cy - head_r // 6
+    eye_dx = head_r // 3
+    draw.ellipse([cx - eye_dx - eye_r, eye_y - eye_r, cx - eye_dx + eye_r, eye_y + eye_r], fill="black")
+    draw.ellipse([cx + eye_dx - eye_r, eye_y - eye_r, cx + eye_dx + eye_r, eye_y + eye_r], fill="black")
+    # Monocle on the right eye (open circle + thin chain to ear)
+    mc_r = eye_r + 4
+    draw.ellipse(
+        [cx + eye_dx - mc_r, eye_y - mc_r, cx + eye_dx + mc_r, eye_y + mc_r],
+        outline="#B8860B", width=2,
+    )
+    # Monocle chain (diagonal line up to right ear)
+    draw.line(
+        [(cx + eye_dx + mc_r, eye_y), (cx + head_r - 2, head_cy - head_r + 4)],
+        fill="#B8860B", width=2,
+    )
+    # Body (oval, slightly narrower than head)
+    body_rx = int(head_r * 0.85)
+    body_ry = int((body_bot - body_top) * 0.55)
+    body_cy = (body_top + body_bot) // 2
+    draw.ellipse(
+        [cx - body_rx, body_cy - body_ry, cx + body_rx, body_cy + body_ry],
+        outline="black", width=4,
+    )
+    # Bowtie collar at neck (two triangles meeting at center)
+    bw = head_r // 4
+    bh = head_r // 3
+    neck_y = body_top + 4
+    # Left triangle
+    draw.polygon(
+        [(cx, neck_y), (cx - bw * 2, neck_y - bh), (cx - bw * 2, neck_y + bh)],
+        fill="black",
+    )
+    # Right triangle
+    draw.polygon(
+        [(cx, neck_y), (cx + bw * 2, neck_y - bh), (cx + bw * 2, neck_y + bh)],
+        fill="black",
+    )
+    # Small center knot
+    knot_r = max(3, head_r // 14)
+    draw.ellipse(
+        [cx - knot_r, neck_y - knot_r, cx + knot_r, neck_y + knot_r],
+        fill="#B8860B", outline="black",
+    )
 
 
 def aspect_ratio_for_dimensions(width, height):
@@ -1328,372 +1448,53 @@ def split_script_to_cards(script_text, n_cards=5):
     return chunks
 
 
-# ── kinetic scene helpers ────────────────────────────────────────────
-# 用于"数字/概念/短句"场景，绕开 Pexels 真实图库，直接用 hyperframes 原生
-# 渲染（渐变背景 + 动画数字 / 大字卡片）。让 hyperframes 发挥 CSS/GSAP
-# 能力，而不是"100% 用网图当幻灯片"。
-
-PALETTES = [
-    # (top, bottom) — 10 套渐变色
-    ("#1a1d2e", "#3d1f3f"),  # 暗紫
-    ("#0f2027", "#2c5364"),  # 深海
-    ("#200122", "#6f0000"),  # 暗红
-    ("#1f4037", "#99f2c8"),  # 翠绿（浅）
-    ("#16222a", "#3a6073"),  # 灰蓝
-    ("#3a1c71", "#d76d77"),  # 紫粉
-    ("#0b486b", "#f56217"),  # 蓝橙
-    ("#1e3c72", "#2a5298"),  # 蓝调
-    ("#5d4157", "#a8caba"),  # 紫绿
-    ("#000428", "#004e92"),  # 深蓝
-]
-
-
-def _palette_for(index: int) -> tuple[str, str]:
-    return PALETTES[index % len(PALETTES)]
-
-
-# 主标题字号（hook 钩子用）— 1920×1080 vs 1080×1920 不同档
-_TITLE_FS = lambda w, h: 220 if w >= h else 280
-_LABEL_FS = lambda w, h: 100 if w >= h else 130
-_COUNTER_FS = lambda w, h: 480 if w >= h else 600
-_UNIT_FS = lambda w, h: 140 if w >= h else 180
-
-
-def _kinetic_base_css(scene_id: str) -> str:
-    """共用 CSS：渐变背景 + 全屏 flex 居中 + 大字白字黑描边。"""
-    return f"""
-    #{scene_id} {{
-      position: absolute; inset: 0;
-      display: flex; flex-direction: column; align-items: center; justify-content: center;
-      text-align: center;
-      color: #fff;
-      text-shadow:
-        -4px -4px 0 #000, 4px -4px 0 #000,
-        -4px 4px 0 #000, 4px 4px 0 #000,
-        -4px 0 0 #000, 4px 0 0 #000,
-        0 -4px 0 #000, 0 4px 0 #000,
-        0 10px 30px rgba(0, 0, 0, 0.6);
-    }}
-    #{scene_id} .k-label {{
-      font-size: var(--k-label-fs); font-weight: 800; letter-spacing: 4px;
-      margin-bottom: 24px; opacity: 0.92;
-    }}
-    #{scene_id} .k-counter {{
-      font-size: var(--k-counter-fs); font-weight: 900; line-height: 1;
-      font-variant-numeric: tabular-nums;
-    }}
-    #{scene_id} .k-unit {{
-      font-size: var(--k-unit-fs); font-weight: 800; margin-top: 16px; opacity: 0.95;
-    }}
-    #{scene_id} .k-title {{
-      font-size: var(--k-title-fs); font-weight: 900; line-height: 1.1;
-      max-width: 86%; padding: 0 5%;
-    }}
-    #{scene_id} .k-title .word {{
-      display: inline-block; opacity: 0; transform: translateY(20px);
-    }}
-    """
-
-
-def build_kinetic_text_scene_html(
-    text: str, scene_index: int, width: int, height: int, overlay: bool = False
-) -> str:
-    """纯文字 kinetic 场景 — 大白字逐词淡入。
-
-    overlay=False (默认): 无背景图，自带渐变背景(老行为)。
-    overlay=True: 作为 Pexels 图/视频上的前景层，透明 + 底部深色 scrim
-    (.kinetic-overlay class) 提高文字可读性。
-    """
-    scene_id = f"kinetic-txt-{scene_index}"
-    top, bottom = _palette_for(scene_index)
-    # 按 CJK 字符 + 英文单词切词
-    tokens = re.findall(r"[A-Za-z0-9]+|[一-鿿]|[^\s\w]", text)
-    words_html = " ".join(f'<span class="word">{escape_html(t)}</span>' for t in tokens)
-    css_vars = (
-        f"--k-label-fs:{_LABEL_FS(width, height)}px;"
-        f"--k-title-fs:{_TITLE_FS(width, height)}px;"
-        f"--k-counter-fs:{_COUNTER_FS(width, height)}px;"
-        f"--k-unit-fs:{_UNIT_FS(width, height)}px;"
-    )
-    if overlay:
-        # 透明背景 + 底部 scrim class，由 build_image_composition_html 同级 CSS 提供
-        bg_style = "background: transparent;"
-        classes = "kinetic kinetic-text kinetic-overlay"
-    else:
-        bg_style = f"background: linear-gradient(135deg, {top} 0%, {bottom} 100%);"
-        classes = "kinetic kinetic-text"
-    return f"""
-    <div class="{classes}" id="{scene_id}" style="
-      {bg_style}
-      {css_vars}
-    ">
-      <style>{_kinetic_base_css(scene_id)}</style>
-      <div class="k-title">{words_html}</div>
-      <script>
-      (function() {{
-        var sel = '#{scene_id} .word';
-        gsap.to(sel, {{
-          opacity: 1, y: 0, duration: 0.5, ease: 'power2.out',
-          stagger: 0.12,
-        }});
-      }})();
-      </script>
-    </div>
-    """
-
-
-def build_animated_counter_scene_html(
-    label: str, value: int, unit: str, scene_index: int, width: int, height: int,
-    overlay: bool = False,
-) -> str:
-    """动画数字场景 — GSAP 从 0 滚到 value，用于"人脑六成是脂肪"之类。
-
-    overlay=True: 透明背景 + 底部 scrim (作为 Pexels 图/视频的前景 overlay)。
-    """
-    scene_id = f"kinetic-num-{scene_index}"
-    top, bottom = _palette_for(scene_index + 3)  # 偏移避免和 text 撞色
-    css_vars = (
-        f"--k-label-fs:{_LABEL_FS(width, height)}px;"
-        f"--k-title-fs:{_TITLE_FS(width, height)}px;"
-        f"--k-counter-fs:{_COUNTER_FS(width, height)}px;"
-        f"--k-unit-fs:{_UNIT_FS(width, height)}px;"
-    )
-    if overlay:
-        bg_style = "background: transparent;"
-        classes = "kinetic kinetic-counter kinetic-overlay"
-    else:
-        bg_style = f"background: linear-gradient(135deg, {top} 0%, {bottom} 100%);"
-        classes = "kinetic kinetic-counter"
-    return f"""
-    <div class="{classes}" id="{scene_id}" style="
-      {bg_style}
-      {css_vars}
-    ">
-      <style>{_kinetic_base_css(scene_id)}</style>
-      <div class="k-label">{escape_html(label)}</div>
-      <div class="k-counter" data-target="{value}">0</div>
-      <div class="k-unit">{escape_html(unit)}</div>
-      <script>
-      (function() {{
-        var el = document.querySelector('#{scene_id} .k-counter');
-        var target = parseInt(el.getAttribute('data-target'), 10);
-        var obj = {{ val: 0 }};
-        gsap.to(obj, {{
-          val: target, duration: 2.2, ease: 'power2.out',
-          onUpdate: function() {{ el.textContent = Math.round(obj.val); }}
-        }});
-      }})();
-      </script>
-    </div>
-    """
-
-
-_NUMBER_RE = re.compile(r"(\d+(?:\.\d+)?)\s*(%|％|倍|万|亿|岁|分钟|秒|天|月|年|公斤|克|千|百)?")
-# 中文数字: "六成" "六十" "八千万" "三十" "两亿" "五百年" "第七天"
-_CN_NUM_CHARS = "零一二三四五六七八九十两"
-_CN_NUM_RE = re.compile(
-    r"([零一二三四五六七八九十两百千]+)"
-    r"\s*(%|％|倍|万|亿|岁|分钟|秒|天|月|年|公斤|克|千|百|第|成)?"
-)
-# 数字单位提示，用于 counter 场景
-_UNIT_FROM_RE = {
-    "%": "%", "％": "%", "倍": "倍", "万": "万",
-    "亿": "亿", "岁": "岁", "分钟": "分钟", "秒": "秒",
-    "天": "天", "月": "月", "年": "年", "公斤": "kg", "克": "g",
-    "千": "k", "百": "百", "": "",
-    "第": "",  # "第七天" → counter
-}
-
-
-def _parse_cn_num(s):
-    """把中文数字串转成 int。覆盖 1-99 以及带 万/千/百 修饰的情况。
-
-    接受: "六" "三十" "六十五" "一百" "两百" "八千" "三万" "八千万"
-    未知结构或 0 都返回 1（避免动画停在 0）。
-    """
-    s = s.strip()
-    if not s:
-        return 0
-    digit = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3,
-             "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
-    if s in digit:
-        return digit[s]
-
-    # 切分 "X千Y万Z" - 找最高级单位，按它分段累加
-    val = 0
-    for unit, mult in (("亿", 10**8), ("万", 10**4),
-                       ("千", 10**3), ("百", 10**2), ("十", 10)):
-        if unit in s:
-            head, _, tail = s.partition(unit)
-            # head 可能是 "X" / "X十" / "X千" - 递归算
-            if head:
-                h = _parse_cn_num(head)
-            elif unit == "十":
-                h = 1  # "十五" → 1*10 + 5
-            else:
-                h = 1
-            val += h * mult
-            s = tail
-    # 余下个位
-    if s and s in digit:
-        val += digit[s]
-    return val or 1
-
-
-def _extract_counter_value(chunk):
-    """从 chunk 抽出第一个具体数字和单位。返回 (value, unit) 或 None。
-
-    value 归一化到 [1, 999] 范围（counter 场景 GSAP 动画 0→value），
-    对 "万"/"亿" 级别做单位换算（"八千万" → (8, "千万吨")、"两亿" → (2, "亿")）。
-    unit 是字面上的单位后缀，会原样显示在数字右边。
-    """
-    # 1) ASCII 数字优先（最准）
-    m = _NUMBER_RE.search(chunk)
-    if m:
-        try:
-            v = int(float(m.group(1)))
-            unit = (m.group(2) or "").strip()
-            return _normalize_counter(v, _UNIT_FROM_RE.get(unit, unit or ""))
-        except (ValueError, IndexError):
-            pass
-    # 2) 中文数字
-    m = _CN_NUM_RE.search(chunk)
-    if m and any(c in _CN_NUM_CHARS for c in m.group(0)):
-        v = _parse_cn_num(m.group(1).rstrip("第").strip())
-        if v > 0:
-            unit_raw = (m.group(2) or "").strip()
-            return _normalize_counter(v, _UNIT_FROM_RE.get(unit_raw, unit_raw or ""))
-    return None
-
-
-def _normalize_counter(value, unit):
-    """把 value 压回 [1, 9999]（counter 场景动画 0→value），对"万"/"亿"换算。
-
-    "八千万吨" (80000000) → (8000, "万吨")
-    "两亿" (200000000) → (2, "亿")
-    "三千年" (3000) → (3000, "年")
-    "30 岁" → 原样
-    "60 %" → 原样
-    """
-    if value <= 0:
-        return 1, unit
-    cap = 9999
-    # "六成" = 60% (一成 = 1/10)，把 value*10 当成 % 值
-    if "成" in unit and "亿" not in unit and "万" not in unit and "千" not in unit:
-        return min(value * 10, cap), "%"
-    if "亿" in unit and value >= 10**8:
-        head = value // 10**8
-        suffix = unit.replace("亿", "").strip()
-        new_unit = (suffix + "亿") if suffix else "亿"
-        return min(head, cap), new_unit
-    if "万" in unit and value >= 10**4:
-        head = value // 10**4
-        suffix = unit.replace("万", "").strip()
-        new_unit = (suffix + "万") if suffix else "万"
-        return min(head, cap), new_unit
-    if "千" in unit and value >= 1000:
-        head = value // 1000
-        suffix = unit.replace("千", "").strip()
-        new_unit = (suffix + "千") if suffix else "千"
-        return min(head, cap), new_unit
-    return min(value, cap), unit
-
 
 def decide_scene_type(chunk: str, scene_index: int) -> str:
-    """返回 'counter' | 'kinetic' | 'stock'。"""
-    if not chunk or not chunk.strip():
+    """Classify a chunk for the informational log in _enrich_with_kinetic.
+
+    Returns "counter" / "kinetic" / "stock". Post-cat-doctor the value
+    only affects the log line — visuals are ink-line cards regardless.
+    Kept as a free function (not inlined) so the classification rules
+    can be unit-tested independently.
+    """
+    text = (chunk or "").strip()
+    if not text:
         return "stock"
-    text = chunk.strip()
-    # 含"有视觉冲击"的数字（>= 5 或有单位）→ counter 场景
-    extracted = _extract_counter_value(text)
-    if extracted:
-        value, unit = extracted
-        # 弱数字（"第一刀"/"一辈子" 之类）不当 counter — 阈值 >= 5 或有单位
-        if value >= 5 or unit:
-            return "counter"
-    # 短句（< 18 字，无数字） → kinetic text
-    if len(text) < 18:
+    if re.search(r"\d", text):
+        # Coarse heuristic: any digit triggers "counter". Good enough for
+        # an informational log — the visuals don't branch on this anymore.
+        return "counter"
+    if len(text) <= 24:
         return "kinetic"
     return "stock"
 
 
-def _enrich_with_kinetic(media_items, chunks, width, height, apply_overlay=False):
-    """对每个 scene 跑 `decide_scene_type` 分类 + 注入可选的 kinetic overlay。
+def _enrich_with_kinetic(media_items, chunks, width, height):
+    """Informational-only: classify each scene, log the breakdown, return input.
 
-    apply_overlay=False (默认, 2026-06-18 用户反馈后):
-      Pexels 图/视频太干净了,不要再叠大字/数字。函数仅做分类 + 日志,
-      直接返回原 media_items。底部 sub-caption 仍然跟着 TTS 显示。
+    Post-cat-doctor (T11): the visual style is cat-doctor ink-line + 3-color
+    annotations. Kinetic overlays (animated counters, kinetic text) were
+    designed for stock-footage slideshows — they don't fit ink-line cards.
+    The function is kept only because the caller still wants the
+    classification log (so operators can see what scene types got picked).
+    It MUST NOT modify media_items.
 
-    apply_overlay=True (历史行为, 留着方便未来重开):
-      把 ~30% 的"含数字/短句"场景叠加 kinetic overlay 而不是替换。
-      返回的 media_items 形状:
-        - ("image_overlay", (image_path, kinetic_html)) — Pexels 图 + kinetic overlay
-        - ("video_overlay", (video_path, kinetic_html)) — Pexels 视频 + kinetic overlay
-        - ("kinetic", html_str) — 无 stock 时纯 kinetic (gradient 背景)
-        - ("image", path) / ("video", path) — 不触发 kinetic 时保留 stock
-        - ("gradient", path) — pad/fallback gradient
+    Pre-cat-doctor this function had an `apply_overlay=True` branch that
+    swapped ("image", path) → ("image_overlay", (path, html)) for ~30% of
+    scenes. That branch is removed entirely — no caller reaches it now,
+    and re-enabling it would re-introduce a competing visual style.
     """
     n = len(media_items)
-    out = []
     kinetic_count = 0
-    for i, ((kind, path), chunk) in enumerate(zip(media_items, chunks)):
+    for i, ((_kind, _path), chunk) in enumerate(zip(media_items, chunks)):
         scene_type = decide_scene_type(chunk, i)
-        if not apply_overlay:
-            # 仅分类 + 日志,不动 media_items
-            if scene_type != "stock":
-                kinetic_count += 1
-            out.append((kind, path))
-            continue
-        if scene_type == "counter":
-            extracted = _extract_counter_value(chunk) or (0, "")
-            value, unit = extracted
-            # 把数字部分去掉，剩下的就是 label
-            label = re.sub(
-                r"\d+(?:\.\d+)?\s*[%％倍万亿岁分钟秒天月年公斤克千百]?",
-                "", chunk,
-            )
-            label = re.sub(
-                r"[零一二三四五六七八九十两](?:百|十)?[零一二三四五六七八九十两]?"
-                r"(?:\.\d+)?\s*[%％倍万亿岁分钟秒天月年公斤克千百第]?",
-                "", label,
-            )
-            label = re.sub(r"[，。！？.!?]+$", "", label).strip()[:24] or "数据"
-            html_str = build_animated_counter_scene_html(
-                label, value, unit, i, width, height, overlay=(kind in ("image", "video"))
-            )
-            if kind == "image":
-                out.append(("image_overlay", (path, html_str)))
-                kinetic_count += 1
-            elif kind == "video":
-                out.append(("video_overlay", (path, html_str)))
-                kinetic_count += 1
-            else:
-                # No stock media (gradient/pad fallback) — keep pure kinetic
-                out.append(("kinetic", html_str))
-                kinetic_count += 1
-        elif scene_type == "kinetic":
-            short = re.sub(r"\s+", " ", chunk).strip()
-            if len(short) > 24:
-                short = short[:24] + "…"
-            html_str = build_kinetic_text_scene_html(
-                short, i, width, height, overlay=(kind in ("image", "video"))
-            )
-            if kind == "image":
-                out.append(("image_overlay", (path, html_str)))
-                kinetic_count += 1
-            elif kind == "video":
-                out.append(("video_overlay", (path, html_str)))
-                kinetic_count += 1
-            else:
-                out.append(("kinetic", html_str))
-                kinetic_count += 1
-        else:
-            out.append((kind, path))
+        if scene_type != "stock":
+            kinetic_count += 1
     log(
-        f"  scene type mix: {kinetic_count}/{n} kinetic "
-        f"({100*kinetic_count//max(n,1)}% — target ~30%, overlay={'on' if apply_overlay else 'off'})"
+        f"  scene classification: {kinetic_count}/{n} "
+        f"non-stock (informational only — visuals are ink-line cards)"
     )
-    return out
+    return media_items
 
 
 def _safe_hl_slice(main, hl):
