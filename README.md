@@ -65,8 +65,6 @@ Dockerfile / docker-compose.yml 容器化 Web；绑定 :9998
 SKILL.md                        agent 在 chat 里操作 job 的规范流程
 docs/architecture.md            内部机制（维护者参考）
 docs/superpowers/specs/         逐个特性的设计文档 / 迭代史
-reference-style-video.md        喂给脚本 LLM 的风格简报
-reference-scripts/              风格样例（不会被复制进产物）
 scripts/
   process_video_script_jobs.py    script 守护进程（LLM 旁白 + cover.json 校验）
   process_video_render_jobs.py    render 守护进程（puppeteer + chrome + 封面）

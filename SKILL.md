@@ -40,8 +40,7 @@ Gunicorn worker 是 fork 模式，添加新端点后必须 `pkill -HUP gunicorn`
 
 ## 风格素材
 
-- `reference-style-video.md` — 视频旁白风格规范（150s 短视频节奏、信息密度高、5s 内反常识、10–15s 一卡）。script 守护进程的 LLM prompt 必读这份。
-- `reference-scripts/01-ai-terms.md` — 风格样例（"AI 名词其实就 5 个"，215 字，7 卡节奏）。script 守护进程**不复制**这份，只用作风格锚点。
+> 脚本正文创作风格暂已移除：旧 [xingzhe] 段子风格连同 `reference-style-video.md` / `reference-memes.md` / `reference-scripts/` 及 `benchmarks/xingzhe/` 语料一并删除。当前 LLM prompt 只用中立骨架（主题 + 长度 + 纯文本 + JSON 输出），新风格待定义。封面（cover）规范保留不变。
 
 ## 跑批产物（runs/{job_id}/）
 
@@ -191,8 +190,6 @@ app.py                          Flask Web 应用（UI + JSON API，:9998）
 gunicorn.conf.py                2 个 sync worker，60s 超时
 Dockerfile / docker-compose.yml 容器化 Web，绑定 :9998
 SKILL.md                        项目状态 / 阶段日志
-reference-style-video.md        喂给脚本 LLM 的风格简报
-reference-scripts/              风格样例（不会被复制）
 scripts/
   process_video_script_jobs.py    script 守护进程（LLM 旁白 + cover.json 校验）
   process_video_render_jobs.py    render 守护进程（puppeteer + chrome + cover splash）

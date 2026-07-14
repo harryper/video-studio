@@ -33,11 +33,9 @@ SKILL_DIR = Path(__file__).resolve().parents[1]
 JOBS_DIR = SKILL_DIR / "jobs" / "video"
 RUNS_DIR = SKILL_DIR / "runs"
 LOCK_PATH = SKILL_DIR / ".video-script-writer.lock"
-# Char-count tolerance band. The style guide targets 560-640 chars
-# (see reference-style-video.md, 抖音科普短片节奏更紧凑), but LLM output
-# is noisy — widened to 300-1200 to support both short-form (300+ chars
-# e.g. 抖音小知识/科普短文案) and long-form (200s 抖音科普对标大约
-# 1080 字, 上限 1200 留余量).
+# Char-count tolerance band. LLM output is noisy — widened to 300-1200 to
+# support both short-form (300+ chars e.g. 抖音小知识/科普短文案) and
+# long-form (200s 抖音科普大约 1080 字, 上限 1200 留余量).
 MIN_SCRIPT_CHARS = 300
 MAX_SCRIPT_CHARS = 1200
 DEFAULT_TARGET_SECONDS = 110
@@ -83,9 +81,9 @@ LOG_FILE = Path("/var/log/video-studio/video-script-watcher.log")
 
 
 # ----- 脚本正文创作风格已移除 (待定义新风格) -----
-# 旧的 [xingzhe] 段子风格 (MEME_GUIDE) + reference-style-video.md/reference-memes.md
-# 注入已从 build_prompt 中撤下。当前脚本 prompt 只保留中立骨架 (主题 + 长度 +
-# 纯文本 + JSON 输出)。封面 (COVER_INSTRUCTIONS) 及其校验逻辑保留不变。
+# 旧的段子风格 (MEME_GUIDE) + 风格/段子参考文件注入已从 build_prompt 中撤下,
+# 相关语料/参考文件也已从仓库删除。当前脚本 prompt 只保留中立骨架 (主题 +
+# 长度 + 纯文本 + JSON 输出)。封面 (COVER_INSTRUCTIONS) 及其校验逻辑保留不变。
 
 COVER_INSTRUCTIONS = '''## 封面文案 (独立于正文, 额外生成)
 

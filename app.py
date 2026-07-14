@@ -40,7 +40,6 @@ JOBS_DIR = SKILL_DIR / 'jobs' / 'video'
 ARCHIVE_DIR = SKILL_DIR / 'archive' / 'video'
 RUNS_DIR = SKILL_DIR / 'runs'
 TRIGGERS_DIR = SKILL_DIR
-REFERENCE_SCRIPT_DIR = SKILL_DIR / 'reference-scripts'
 
 # 三档画幅预设
 ASPECT_PRESETS = {

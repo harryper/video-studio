@@ -37,7 +37,6 @@ WORKSPACE_DIR = SKILL_DIR.parents[1]
 JOBS_DIR = SKILL_DIR / "jobs" / "video"
 VIDEO_RUNS_DIR = SKILL_DIR / "runs"
 PLACEHOLDER_HTML = SKILL_DIR / "templates" / "video_placeholder.html"
-VIDEO_STYLE_HELPER = SKILL_DIR / "reference-style-video.md"
 UPLOAD_SCRIPT = SKILL_DIR / "scripts" / "upload_to_oss.py"
 IMAGE_GEN_SCRIPT = SKILL_DIR / "scripts" / "minimax_image_gen.py"
 PEXELS_IMAGE_SCRIPT = SKILL_DIR / "scripts" / "pexels_image.py"
