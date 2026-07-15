@@ -23,6 +23,9 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from extract_scene_keywords import SHOTLIST_SCHEMA_VERSION  # noqa: E402
+
 
 def escape_html(s):
     return (s.replace("&", "&amp;")
@@ -579,7 +582,7 @@ def _read_shotlist_for_render(job_id: str, chunks: list[str]) -> "dict | None":
         data = json.loads(shotlist_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return None
-    if data.get("schema_version") != 1:
+    if data.get("schema_version") != SHOTLIST_SCHEMA_VERSION:
         return None
     raw_shots = data.get("shots") or []
     aligned = [None] * len(chunks)
@@ -1418,9 +1421,15 @@ def split_script_to_cards(script_text, n_cards=5):
     if not script_text:
         return [f"Card {i+1}" for i in range(n_cards)]
 
-    # Split by Chinese sentence delimiters (。！？)
+    # Split by sentence delimiters. 科普稿 (CLAUSE_RULES) 用 ASCII ". "
+    # 收句, 所以除了全角 。！？ 还认 ASCII .!? — 但只在后面跟空白/结尾时
+    # 才算句子边界 (避免切开 1.15 这类小数)。
     import re as _re
-    sentences = [s.strip() for s in _re.split(r'(?<=[。！？])', script_text) if s.strip()]
+    sentences = [
+        s.strip()
+        for s in _re.split(r"(?<=[。！？])|(?<=[.!?])(?=\s|$)", script_text)
+        if s and s.strip()
+    ]
     if not sentences:
         sentences = [script_text]
 
