@@ -50,13 +50,17 @@ SPEC_FIELDS = ("subject", "shot", "mood", "color_palette", "avoid")
 
 # cat-doctor shotlist (director daemon writes this). Schema v1.
 # 6 类构图 (quote 不进配图); 红/橙/蓝 3 色批注.
-SHOTLIST_SCHEMA_VERSION = 1
+# v2: prompt_assemble 改版 (批注「」verbatim + 禁英文) 烘焙进缓存的 prompt,
+# bump 版本号让 v1 缓存整体失效, 否则旧 prompt 会被 _read_shotlist_cache 复用。
+SHOTLIST_SCHEMA_VERSION = 2
 SHOTLIST_COMPOSITIONS = ("hook", "data-compare", "process", "rank", "twist", "metaphor")
 SHOTLIST_ANNOTATION_COLORS = ("red", "orange", "blue")
-# negative_prompt 默认值: 挡 cat-doctor 反例画风 (cat-doctor style-dna.md §反例)。
+# negative_prompt 默认值: 挡 cat-doctor 反例画风 (cat-doctor style-dna.md §反例)
+# + 挡英文批注 (MiniMax 会把英文叙述里的中文批注翻译成英文渲染)。
 SHOTLIST_DEFAULT_NEGATIVE_PROMPT = (
     "精致扁平插画, 商业插画, PPT 流程图, 萌系 Q 版, 拟真照片, "
-    "3D 渲染, kawaii, chibi, cute, adorable, blush"
+    "3D 渲染, kawaii, chibi, cute, adorable, blush, "
+    "English text, English words, English letters, latin alphabet annotations"
 )
 
 

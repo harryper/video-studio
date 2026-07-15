@@ -61,9 +61,9 @@ def test_annotations_listed_with_color_in_prompt():
         ],
     }
     prompt, _neg = dj.prompt_assemble(shot, STYLE_PREFIX, CHARACTER_BLOCK)
-    assert "red text 6倍差距" in prompt
-    assert "blue text 一亩地" in prompt
-    assert "orange text 为什么?" in prompt
+    assert "red text 「6倍差距」" in prompt
+    assert "blue text 「一亩地」" in prompt
+    assert "orange text 「为什么?」" in prompt
 
 
 def test_action_present_in_prompt():
@@ -131,6 +131,44 @@ def test_no_annotations_still_produces_valid_prompt():
     assert isinstance(neg, str) and neg
 
 
+def test_annotations_verbatim_quoted_no_translate():
+    """批注必须以「」原样引用 + 明确禁止翻译成英文。
+
+    v_1aed9b49/v_affb0166 实测: prompt 写 'red text 光撞硅', MiniMax 画成
+    'Light strikes Silicon' — 英文叙述里的中文被当语义翻译了。修复要求
+    每条批注用「」括起, 且 prompt 带 verbatim/do not translate 指令。"""
+    shot = {
+        "scene_index": 0,
+        "chunk": "x",
+        "composition": "process",
+        "action": "看着硅片",
+        "annotations": [
+            {"text": "光撞硅", "color": "red"},
+            {"text": "1m²≈200W", "color": "red"},
+        ],
+    }
+    prompt, neg = dj.prompt_assemble(shot, STYLE_PREFIX, CHARACTER_BLOCK)
+    assert "「光撞硅」" in prompt, f"annotation must be 「」-quoted verbatim: {prompt}"
+    assert "「1m²≈200W」" in prompt
+    assert "do not translate" in prompt.lower(), \
+        f"prompt must forbid translating annotations: {prompt}"
+    assert "verbatim" in prompt.lower() or "exactly as given" in prompt.lower()
+
+
+def test_negative_prompt_blocks_english_text():
+    """默认 negative_prompt 必须抑制英文文字渲染。"""
+    shot = {
+        "scene_index": 1,
+        "chunk": "x",
+        "composition": "hook",
+        "action": "歪头",
+        "annotations": [{"text": "真or假", "color": "blue"}],
+    }
+    _prompt, neg = dj.prompt_assemble(shot, STYLE_PREFIX, CHARACTER_BLOCK)
+    assert "English text" in neg or "english text" in neg, \
+        f"negative_prompt must suppress English text: {neg}"
+
+
 if __name__ == "__main__":
     test_style_prefix_present_in_prompt()
     test_character_block_present_in_prompt()
@@ -140,4 +178,6 @@ if __name__ == "__main__":
     test_shot_negative_prompt_overrides_default()
     test_16_9_and_pure_white_in_prompt()
     test_no_annotations_still_produces_valid_prompt()
-    print("\n✅ all 8 prompt_assembly tests passed")
+    test_annotations_verbatim_quoted_no_translate()
+    test_negative_prompt_blocks_english_text()
+    print("\n✅ all 10 prompt_assembly tests passed")

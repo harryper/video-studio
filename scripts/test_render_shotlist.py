@@ -26,7 +26,7 @@ import process_video_render_jobs as rj  # noqa: E402
 def _fake_shotlist(job_id, *, shots):
     """Write a minimal valid shotlist.json under RUNS_DIR/job_id/."""
     shotlist = {
-        "schema_version": 1,
+        "schema_version": rj.SHOTLIST_SCHEMA_VERSION,
         "script_hash": "deadbeef",
         "theme": "测试主题",
         "shots": shots,

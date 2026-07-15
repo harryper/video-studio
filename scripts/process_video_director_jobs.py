@@ -50,11 +50,16 @@ def prompt_assemble(shot: dict, style_prefix: str = STYLE_PREFIX,
     for ann in annotations:
         color = ann.get("color", "blue")
         text = ann.get("text", "")
-        ann_lines.append(f"{color} text {text}")
+        # 「」原样引用: 英文叙述里的裸中文会被 MiniMax 当语义翻译成英文
+        # (实测 'red text 光撞硅' 画成 'Light strikes Silicon')。
+        ann_lines.append(f"{color} text 「{text}」")
     if ann_lines:
         annotations_block = (
-            "A few small handwritten Chinese annotations in red, orange and blue "
-            "floating around: " + ", ".join(ann_lines) + "."
+            "A few small handwritten annotations in red, orange and blue "
+            "floating around: " + ", ".join(ann_lines) + ". "
+            "Render each quoted annotation verbatim as Chinese characters "
+            "exactly as given inside 「」, do not translate them into English, "
+            "do not paraphrase them."
         )
     else:
         annotations_block = (
