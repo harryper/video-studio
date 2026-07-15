@@ -440,6 +440,44 @@ def test_cover_sub_single_line_nowrap():
         f".cover-sub must have white-space: nowrap, got: {css!r}"
 
 
+def test_fallback_cover_writes_cover_json():
+    """v3.4: render 用 cover_fallback 注入封面时必须落盘 runs/<id>/cover.json —
+    narrate 用该文件的存在性决定 audio delay (COVER_DURATION_SEC)。
+
+    之前只有 LLM 封面通过验证时 script 守护进程才写 cover.json；LLM 封面被
+    validator 拒掉 (script_meta.cover=null) 时 render 仍用 fallback 封面渲染
+    视频 (0.8s splash + 场景整体后移), 但 narrate 看不到 cover.json → 音频
+    不延迟 → 旁白比字幕早 0.8s (v_1aed9b49)。"""
+    import json as _json
+    import tempfile
+    import unittest.mock as _mock
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        with _mock.patch.object(rv, "VIDEO_RUNS_DIR", tmp), \
+             _mock.patch.object(rv, "JOBS_DIR", tmp / "jobs"):
+            cover = rv.resolve_cover("v_test123", "但是糖从来不是调味品,真相让你吃惊。")
+            assert cover.get("main"), f"fallback should yield a cover, got {cover!r}"
+            cj = tmp / "v_test123" / "cover.json"
+            assert cj.exists(), \
+                "cover.json must be persisted so narrate applies the 0.8s audio delay"
+            data = _json.loads(cj.read_text(encoding="utf-8"))
+            assert data.get("main") == cover["main"]
+
+
+def test_empty_script_no_cover_json():
+    """空脚本 → 无封面注入 → 不写 cover.json (音频不该被延迟)。"""
+    import tempfile
+    import unittest.mock as _mock
+    with tempfile.TemporaryDirectory() as td:
+        tmp = Path(td)
+        with _mock.patch.object(rv, "VIDEO_RUNS_DIR", tmp), \
+             _mock.patch.object(rv, "JOBS_DIR", tmp / "jobs"):
+            cover = rv.resolve_cover("v_test456", "")
+            assert not cover.get("main")
+            assert not (tmp / "v_test456" / "cover.json").exists(), \
+                "no cover in video → cover.json must NOT exist (no audio delay)"
+
+
 if __name__ == "__main__":
     tests = [
         test_render_cover_layout_basic,
@@ -468,6 +506,8 @@ if __name__ == "__main__":
         test_cover_audio_padded_when_delay_set,
         test_cover_no_audio_delay_when_no_cover,
         test_cover_sub_single_line_nowrap,
+        test_fallback_cover_writes_cover_json,
+        test_empty_script_no_cover_json,
     ]
     failed = 0
     for t in tests:

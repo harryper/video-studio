@@ -318,15 +318,7 @@ def render_placeholder(
     # 封面：脚本守护进程写好的 script_meta.cover 优先；缺失时用
     # cover_fallback 从正文里捞一个反常识句兜底。空脚本两个都空，
     # build_image_composition_html 会跳过封面注入。
-    cover = {}
-    jp = job_path(job_id)
-    if jp.exists():
-        try:
-            cover = (load_job(jp).get("script_meta") or {}).get("cover") or {}
-        except (OSError, json.JSONDecodeError):
-            cover = {}
-    if not cover.get("main"):
-        cover = cover_fallback(script_text)
+    cover = resolve_cover(job_id, script_text)
 
     html = build_image_composition_html(
         media_items,
@@ -1577,6 +1569,35 @@ def cover_fallback(script_text):
             sub = cleaned
             break
     return {"main": main, "main_highlight": [hl_s, hl_e], "sub": sub}
+
+
+def resolve_cover(job_id, script_text):
+    """Resolve the cover dict for a render and persist runs/<id>/cover.json.
+
+    Priority: script daemon's validated script_meta.cover → cover_fallback
+    from the script text. Whenever a cover WILL be rendered (non-empty
+    main), cover.json is (re)written — the narrate daemon keys the 0.8s
+    audio delay off that file's existence. v3.4 fix: previously only the
+    LLM path wrote cover.json, so a fallback cover produced a video with a
+    cover scene but no audio delay → voice ran COVER_DURATION_SEC ahead of
+    the subtitles (v_1aed9b49).
+    """
+    cover = {}
+    jp = job_path(job_id)
+    if jp.exists():
+        try:
+            cover = (load_job(jp).get("script_meta") or {}).get("cover") or {}
+        except (OSError, json.JSONDecodeError):
+            cover = {}
+    if not cover.get("main"):
+        cover = cover_fallback(script_text)
+    cover_json_path = VIDEO_RUNS_DIR / job_id / "cover.json"
+    if cover.get("main"):
+        cover_json_path.parent.mkdir(parents=True, exist_ok=True)
+        cover_json_path.write_text(
+            json.dumps(cover, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    return cover
 
 
 def render_cover_layout(cover, scene_idx, width=DEFAULT_WIDTH, height=DEFAULT_HEIGHT):
