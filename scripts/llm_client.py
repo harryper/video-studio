@@ -2,15 +2,17 @@
 """Thin Claude Messages-API client for the video-studio daemons.
 
 Replaces the old `openclaw agent` subprocess LLM backend. Connection info is
-read from /root/.claude/settings.json (the `env` block) so nothing is
-hardcoded — an env var of the same name overrides the file, and the settings
-path itself is overridable via CLAUDE_SETTINGS_FILE.
+read from the project-local `llm_config.json` (the `env` block) so daemons
+don't depend on systemd EnvironmentFile= or the Claude Code client's own
+settings — the latter may point at a gateway that rejects bare SDK calls.
+An env var of the same name overrides the file, and the config path itself
+is overridable via LLM_CONFIG_FILE.
 
-The endpoint currently configured there (api-cc.freemodel.dev) gates access to
-"the official Claude Code client" and rejects a bare SDK call. The header set
-sent with each request is therefore configurable (LLM_CLIENT_HEADERS, JSON) so
-the daemons can present the fingerprint that endpoint expects without code
-changes. Default headers are empty.
+`llm_config.json` carries the real token and is gitignored; see
+`llm_config.json.example` for the expected shape.
+
+The header set sent with each request is configurable (LLM_CLIENT_HEADERS,
+JSON) in case an endpoint expects a specific fingerprint. Default is empty.
 """
 
 import json
@@ -21,13 +23,14 @@ from pathlib import Path
 import anthropic
 
 _SETTINGS_FILE = Path(
-    os.environ.get("CLAUDE_SETTINGS_FILE", "/root/.claude/settings.json")
+    os.environ.get("LLM_CONFIG_FILE")
+    or Path(__file__).resolve().parents[1] / "llm_config.json"
 )
 _DEFAULT_MODEL = "claude-opus-4-8"
 
 
 def _settings_env() -> dict:
-    """The `env` block from settings.json, or {} if unreadable."""
+    """The `env` block from llm_config.json, or {} if unreadable."""
     try:
         return json.loads(_SETTINGS_FILE.read_text(encoding="utf-8")).get("env", {})
     except (OSError, json.JSONDecodeError):
@@ -35,7 +38,7 @@ def _settings_env() -> dict:
 
 
 def _cfg(name: str, default: str = "") -> str:
-    """Resolve a setting: real env var wins, then settings.json, then default."""
+    """Resolve a setting: real env var wins, then llm_config.json, then default."""
     return os.environ.get(name) or _settings_env().get(name) or default
 
 
@@ -60,7 +63,7 @@ def _client() -> anthropic.Anthropic:
     if base_url:
         kwargs["base_url"] = base_url
     # auth_token → Authorization: Bearer; api_key → x-api-key. Prefer whichever
-    # settings.json actually carries.
+    # llm_config.json actually carries.
     if token:
         kwargs["auth_token"] = token
     elif api_key:

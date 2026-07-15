@@ -28,6 +28,7 @@ __pycache__/
 *_api_key.txt
 azure_speech_key.txt
 config.json
+llm_config.json
 # Cloudflare R2 credentials (gitignored; copy from agent-memory or ops vault).
 scripts/r2_credentials.md
 

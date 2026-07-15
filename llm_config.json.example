@@ -1,0 +1,8 @@
+{
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://api.example.com/anthropic",
+    "ANTHROPIC_AUTH_TOKEN": "sk-your-token-here",
+    "ANTHROPIC_MODEL": "your-model-id",
+    "ANTHROPIC_DEFAULT_HAIKU_MODEL": "your-model-id"
+  }
+}
