@@ -85,6 +85,70 @@ LOG_FILE = Path("/var/log/video-studio/video-script-watcher.log")
 # 相关语料/参考文件也已从仓库删除。当前脚本 prompt 只保留中立骨架 (主题 +
 # 长度 + 纯文本 + JSON 输出)。封面 (COVER_INSTRUCTIONS) 及其校验逻辑保留不变。
 
+# ----- 科普赛道正文风格 (4 个块, 拼装顺序见 build_prompt) -----
+
+NARRATIVE_SKELETON = '''## 叙事骨架 (5 阶段, 不锁字数, 阶段间不写显式标记)
+
+按这个顺序组织, 把事讲清楚, 每个阶段都是讲的人脑子里想过的, 不是给观众看的标签:
+
+1. 钩子: 开场第一句直接抛反常识 / 数字冲击 / 具体场景. 第一句必须是信息本身.
+   严禁 "今天我们来聊聊..." / "你有没有想过..." 这类冷启动套话.
+2. 认知缺口: 点破 "你以为的 vs 实际的", 制造悬念. 说出常识误区, 但不给答案.
+3. 逐层揭秘: 用因果链把原理讲清楚, 一层扣一层. 每层只推进一步, 用具体数字 / 实物锚定, 不堆抽象名词.
+4. 反转 / 意外: 一个 "原来如此" 的点, 或反直觉延伸 (尺度对比 / 历史巧合 / "所以其实..."). 尽量有, 但宁缺毋滥, 没有强反转就弱化, 不硬凑.
+5. 落点: 一句话收束, 回扣钩子. 严禁开放式问号 / 抒情 / "以上就是..." / "希望对你有帮助".
+
+完整示例 (主题: 海水为什么是咸的, 不要照抄, 看骨架怎么走):
+
+  海水是咸的, 但你可能没想到, 罪魁祸首根本不是海.
+  一公斤海水里, 溶了 35 克盐, 全球海洋加起来有 50 万亿吨.
+  你以为盐一直就在海里, 其实不是. 海本来是淡水.
+  盐是河冲进来的. 雨水落到山上, 渗进岩缝, 一点点溶解矿物质, 然后汇成河, 一路冲进海.
+  海里的水蒸发, 盐留下, 越攒越多, 一攒就是几十亿年.
+  所以下次喝到咸水, 别骂海, 骂山.
+'''
+
+VOICE_GUIDE = '''## 口吻: 聪明朋友 (像人在讲, 不像稿子在念)
+
+- 有观点, 不只报事实: 讲完事实带反应. "这就有意思了" / "离谱的是" / "这才是关键".
+- 偶尔用 "我" / "你" 拉近距离, 适度不滥用.
+- 具体优先于抽象: 不说 "含有大量矿物质", 说 "每公斤海水里溶了 35 克盐".
+- 口语连接: 用 "但" / "结果" / "所以说" / "关键是", 不用 "然而" / "此外" / "综上所述".
+- 偶尔短句砸下来给节奏: "就这么简单." / "没了."
+- 距离感: 不刻意惊叹, 不连续感叹号, 不网络烂梗 ("家人们" / "绝绝子" 类). 信息密度撑吸引力, 不靠喊. 不说教, 不用 "我们应该" / "这告诉我们" / "值得深思" 类升华.
+- 口吻服务于把事讲清楚 + 讲得有意思, 不是加戏.
+'''
+
+ANTI_AI_RULES = '''## 去 AI 味 (Humanizer-zh 蒸馏, 短视频适用)
+
+### A. AI 高频词黑名单 (一个都别用)
+此外, 值得注意的是, 至关重要, 深入探讨, 总的来说, 综上所述, 不难看出, 显而易见, 众所周知, 在当今社会, 扮演着重要角色, 息息相关, 有着密切联系.
+
+### B. 禁止句式
+- 三段式排比: "不仅...而且...还..." / "它是 A, 是 B, 也是 C" 这类工整三连, 打散.
+- 否定式排比: "不是...而是...; 不是...而是..." 连用.
+- 系动词回避: AI 爱绕开 "是", 写成 "扮演着...的角色" / "构成了...的基础". 能用 "是 / 有 / 会" 就直说.
+- 虚假范围: "在很多方面" / "某种程度上" / "一定意义上".
+- 强行升华: "这告诉我们" / "值得深思" / "不禁让人感慨".
+
+### C. 正向要求 (让它读着像人)
+- 长短句交替, 别每句都一样长.
+- 事实后面带反应 (呼应口吻).
+- 具体细节代替抽象名词.
+- 允许一点不完美, 不追求每句工整对仗, 太齐整反而假.
+'''
+
+CLAUSE_RULES = '''## 断句习惯 (v9 字幕切分硬约束, 写稿时就遵守)
+
+clause 之间用 ASCII "," 或全角 "、。！？；: " 隔开, 不写逗号连不断的 run-on 长句.
+每个 clause 理想 2-12 字, **严禁单个 clause > 20 字** (超了会触发渲染兜底切分, 节奏乱).
+
+正例 (clause 都短, 节奏碎):
+  海水里的盐, 其实是石头泡出来的, 河水冲刷岩石, 把矿物质一路带进海.
+
+反例 (一个 30+ 字 run-on, 会被腰斩):
+  海水之所以是咸的是因为河流长期不断地冲刷地表岩石并将其中溶解的矿物质带入海洋中.
+'''
 COVER_INSTRUCTIONS = '''## 封面文案 (独立于正文, 额外生成)
 
 封面是视频前 2.5 秒的大字冲击: 不念出来, 视觉冲击用。基于主题 + 已写正文, 生成 3 个字段, 写入 jobs/video/<job_id>.json 的 script_meta.cover:
@@ -142,6 +206,82 @@ COVER_INSTRUCTIONS = '''## 封面文案 (独立于正文, 额外生成)
 ```
 '''
 
+# ----- 科普赛道风格: lint 启发式 (守护进程落盘后做软警告, 不 reject) -----
+
+# AI 高频词黑名单 (Humanizer-zh 蒸馏, 科普适用)
+_KEPU_AI_WORDS = frozenset([
+    "此外", "值得注意的是", "至关重要", "深入探讨", "总的来说",
+    "综上所述", "不难看出", "显而易见", "众所周知", "在当今社会",
+    "扮演着重要角色", "息息相关", "有着密切联系",
+])
+
+# 禁止句式正则 (三段式排比 / 否定式排比 / 系动词回避变体)
+# - "不仅...而且...还..." / "是A，是B，也是C" 类工整三连
+# - "不是A，而是B；不是C，而是D" 类否定式排比连用
+_KEPU_BANNED_PATTERNS = [
+    re.compile(r"不仅.{1,15}而且.{1,15}还"),
+    re.compile(r"是.{1,8}，是.{1,8}，也是"),
+    re.compile(r"不是.{1,8}而是.{1,8}[；;,，、]?不是"),
+]
+
+# 强行升华结尾 (跟 v9 硬约束的 "希望对你有帮助" 互补, 升级独立规则名)
+_KEPU_BANNED_ENDINGS = [
+    "这告诉我们", "值得深思", "不禁让人感慨",
+    "希望对你有帮助", "以上就是", "愿你", "希望你",
+]
+
+# v9 字幕切分硬约束: 单 clause > 20 字触发 _split_long_clause 兜底, 节奏乱
+_KEPU_MAX_CLAUSE_CHARS = 20
+
+
+def _split_clauses(text):
+    """按 v9 标点 (ASCII , 或全角 、，。！？；：) 或换行切 clause: 渲染每行独立, 不切就跨行合并触发 long_clause 误报.
+    复用 project 约定的切分集, 跟 _SPLIT_PUNCT 对齐."""
+    if not text:
+        return []
+    # 同时去掉空白后切, 空 clause 丢弃
+    return [c.strip() for c in re.split(r"[、，。！？；：,\n]", text) if c.strip()]
+
+
+def lint_script(script_text):
+    """启发式风格 lint. 返回命中规则名列表 (空=干净).
+
+    守护进程在 _write_run_artifacts 之后调用, 只 log 不 reject.
+    单测也复用做 gold 稿锚点.
+    """
+    if not script_text:
+        return []
+    hits = []
+
+    # A. AI 黑名单词
+    for w in _KEPU_AI_WORDS:
+        if w in script_text:
+            hits.append("ai_word")
+            break
+
+    # B. 长 clause (>20 字)
+    for clause in _split_clauses(script_text):
+        if len(clause) > _KEPU_MAX_CLAUSE_CHARS:
+            hits.append("long_clause")
+            break
+
+    # C. 禁止句式 (排比/三连)
+    for pat in _KEPU_BANNED_PATTERNS:
+        if pat.search(script_text):
+            hits.append("banned_pattern")
+            break
+
+    # D. 强行升华结尾
+    for phrase in _KEPU_BANNED_ENDINGS:
+        if phrase in script_text:
+            hits.append("banned_ending")
+            break
+
+    # 去重保持顺序 (按发现顺序, 便于 log 可读)
+    seen = set()
+    return [h for h in hits if not (h in seen or seen.add(h))]
+
+
 def log(msg):
     line = f"[video-script-writer] {msg}"
     print(line, flush=True)
@@ -197,7 +337,12 @@ def build_prompt(job):
         f"为 video-studio 写一段约 {target_seconds} 秒 ({target_chars} 字) 的短视频旁白稿。\n"
         f"主题：{theme}\n\n"
 
-        f"{COVER_INSTRUCTIONS}\n"
+        f"{NARRATIVE_SKELETON}\n\n"
+        f"{VOICE_GUIDE}\n\n"
+        f"{ANTI_AI_RULES}\n\n"
+        f"{CLAUSE_RULES}\n\n"
+
+        f"{COVER_INSTRUCTIONS}\n\n"
 
         f"## 硬约束 (优先级最高)\n"
         f"1. 字数目标 {target_chars} 字, 必须落在 {min_chars}-{max_chars} 字区间, **超过 1500 字直接判失败**\n"
@@ -360,6 +505,10 @@ def generate_script(job):
 
     validated_cover = parse_cover_validation(cover) if cover else None
     _write_run_artifacts(job["id"], script, validated_cover)
+    # 科普风格软警告 (不 reject, 仅供人回看 job 日志时定位问题)
+    lint_hits = lint_script(script)
+    if lint_hits:
+        log(f"kepu-lint hits={lint_hits} job={job['id']} (warning only, not rejected)")
     return script, validated_cover, None
 
 

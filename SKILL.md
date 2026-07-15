@@ -40,7 +40,7 @@ Gunicorn worker 是 fork 模式，添加新端点后必须 `pkill -HUP gunicorn`
 
 ## 风格素材
 
-> 脚本正文创作风格暂已移除：旧 [xingzhe] 段子风格连同 `reference-style-video.md` / `reference-memes.md` / `reference-scripts/` 及 `benchmarks/xingzhe/` 语料一并删除。当前 LLM prompt 只用中立骨架（主题 + 长度 + 纯文本 + JSON 输出），新风格待定义。封面（cover）规范保留不变。
+> 脚本正文创作风格已定义：科普赛道（叙事 5 阶段骨架 + 聪明朋友口吻 + 去 AI 味 + v9 断句）。4 个 prompt 常量块（`NARRATIVE_SKELETON` / `VOICE_GUIDE` / `ANTI_AI_RULES` / `CLAUSE_RULES`）写在 `scripts/process_video_script_jobs.py` 的 `build_prompt` 里，Humanizer-zh 蒸馏为短视频适用清单（丢弃排版类规则）。`lint_script()` 做落盘后软警告（只 log 不 reject），单测 `scripts/test_kepu_style.py` 13/13。封面（cover）规范保留不变。
 
 ## 跑批产物（runs/{job_id}/）
 
