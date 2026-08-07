@@ -135,6 +135,9 @@
   }
   .badge.pending { background: #3b4252; color: #aab0bd; }
   .badge.ready_script, .badge.scripted { background: #2d4a5e; color: #6cb6ff; }
+  .badge.ready_outline { background: #3a2d5e; color: #c084fc; }
+  .badge.pending_script { background: #2d4a5e; color: #6cb6ff; }
+  .badge.outlining, .badge.writing { background: #3b4252; color: #aab0bd; }
   .badge.rendered { background: #4a3a5e; color: #c084fc; }
   .badge.final { background: #1e4a32; color: var(--success); }
   .badge.error { background: #5a2a2a; color: var(--danger); }
@@ -295,6 +298,20 @@
         <div id="errorBox" class="error-box" style="display:none"></div>
       </div>
 
+      <div class="block" id="outlineBlock" style="display:none">
+        <div class="section-label">🗒 创作提纲（确认后开始写稿）</div>
+        <div id="outlineFacts"></div>
+        <div class="form-group" style="margin-top:12px">
+          <label>叙事角度</label>
+          <input type="text" id="outlineAngle">
+        </div>
+        <div class="form-group">
+          <label>开场钩子</label>
+          <input type="text" id="outlineHook">
+        </div>
+        <button class="primary full" id="confirmOutlineBtn" style="margin-top:8px">✅ 确认提纲，开始写稿</button>
+      </div>
+
       <div class="block" id="scriptBlock" style="display:none">
         <div class="section-label">📜 旁白稿</div>
         <div class="script-box" id="scriptText"></div>
@@ -328,6 +345,10 @@ let pollTimer = null;
 
 const STATE_LABEL = {
   pending: '待生成',
+  outlining: '出提纲中',
+  ready_outline: '待确认提纲',
+  pending_script: '提纲已确认',
+  writing: '写稿中',
   ready_script: '已写稿',
   rendered: '已渲染',
   final: '已完成',
@@ -337,6 +358,10 @@ const STATE_LABEL = {
 
 const STATE_PROGRESS = {
   pending: 10,
+  outlining: 15,
+  ready_outline: 20,
+  pending_script: 25,
+  writing: 30,
   ready_script: 35,
   rendered: 70,
   final: 100,
@@ -429,6 +454,17 @@ function renderDetail(job) {
   const chars = (job.script_meta && job.script_meta.char_count) || 0;
   document.getElementById('detailChars').textContent = chars || '—';
   document.getElementById('detailCreated').textContent = (job.created_at || '').slice(0, 16) || '—';
+
+  // 提纲块（仅 ready_outline 状态显示，可编辑）
+  const outline = job.outline || {};
+  if (job.status === 'ready_outline' && outline.facts) {
+    document.getElementById('outlineBlock').style.display = 'block';
+    renderOutlineFacts(outline.facts);
+    document.getElementById('outlineAngle').value = outline.angle || '';
+    document.getElementById('outlineHook').value = outline.hook || '';
+  } else {
+    document.getElementById('outlineBlock').style.display = 'none';
+  }
 
   // 脚本
   if (job.script) {
@@ -591,6 +627,48 @@ function formatBytes(b) {
   if (b < 1048576) return (b/1024).toFixed(1) + 'KB';
   return (b/1048576).toFixed(1) + 'MB';
 }
+
+// ── 提纲编辑 ─────────────────────────────────────────────────────
+function renderOutlineFacts(facts) {
+  const container = document.getElementById('outlineFacts');
+  container.innerHTML = facts.map((f, i) => `
+    <div class="form-group" style="margin-bottom:8px">
+      <label>知识点 ${i + 1}</label>
+      <input type="text" id="fact-${i}" value="${escapeHtml(f)}">
+    </div>
+  `).join('') + `
+    <button class="small" id="addFactBtn" type="button" style="margin-top:4px">+ 添加知识点</button>
+  `;
+  document.getElementById('addFactBtn').addEventListener('click', () => {
+    const inputs = container.querySelectorAll('input[id^="fact-"]');
+    const currentFacts = Array.from(inputs).map(el => el.value);
+    currentFacts.push('');  // 新增空行让用户填
+    renderOutlineFacts(currentFacts);
+  });
+}
+
+function collectOutlineFacts() {
+  const inputs = document.querySelectorAll('#outlineFacts input[id^="fact-"]');
+  return Array.from(inputs)
+    .map(el => el.value.trim())
+    .filter(s => s.length > 0);
+}
+
+document.getElementById('confirmOutlineBtn').addEventListener('click', async () => {
+  if (!currentJob) return;
+  const facts = collectOutlineFacts();
+  const angle = document.getElementById('outlineAngle').value.trim();
+  const hook = document.getElementById('outlineHook').value.trim();
+  if (facts.length === 0) {
+    alert('至少保留一条知识点');
+    return;
+  }
+  await rerunWithFeedback(
+    document.getElementById('confirmOutlineBtn'),
+    `/api/jobs/${currentJob.id}/confirm-outline`,
+    { outline: { facts, angle, hook } }
+  );
+});
 
 // ── 启动轮询 ─────────────────────────────────────────────────────
 refreshJobs();

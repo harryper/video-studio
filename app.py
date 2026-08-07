@@ -142,6 +142,7 @@ def job_response(job: dict) -> dict:
         'status': job.get('status'),
         'script': job.get('script'),
         'script_meta': job.get('script_meta'),
+        'outline': job.get('outline'),
         'render': job.get('render'),
         'audio': job.get('audio'),
         'final': job.get('final'),
@@ -342,6 +343,7 @@ def update_job(job_id):
     # 白名单：守护进程可能更新的字段
     for key in (
         'status', 'script', 'render', 'audio', 'final', 'error', 'script_meta',
+        'outline',
     ):
         if key in data:
             job[key] = data[key]
@@ -416,6 +418,34 @@ def trigger_video_script(job_id):
     job.setdefault('logs', []).append(f'{_now_iso()} script re-triggered')
     save_job(job)
     _touch_video_trigger('script')
+    return jsonify({'ok': True, 'job': job_response(job)})
+
+
+@app.route('/api/jobs/<job_id>/confirm-outline', methods=['POST'])
+def confirm_outline(job_id):
+    """User-confirmed outline → status=pending_script. Triggers the script
+    daemon to resume writing the narration. Optional body {"outline": ...}
+    lets the user edit facts/angle/hook before confirming."""
+    job = load_job(job_id)
+    if not job or job.get('mode') != 'video':
+        return jsonify({'error': 'video job not found'}), 404
+    if job.get('status') != 'ready_outline':
+        return jsonify(
+            {'error': f'status is {job.get("status")}, expected ready_outline'}
+        ), 409
+
+    body = request.get_json(silent=True) or {}
+    if 'outline' in body and isinstance(body['outline'], dict):
+        job['outline'] = body['outline']
+    job['status'] = 'pending_script'
+    job['error'] = None
+    job['updated_at'] = _now_iso()
+    job.setdefault('logs', []).append(f'{_now_iso()} outline confirmed by user')
+    save_job(job)
+    try:
+        _touch_video_trigger('script')
+    except OSError as e:
+        print(f'[video-studio] failed to touch script trigger: {e}', file=sys.stderr)
     return jsonify({'ok': True, 'job': job_response(job)})
 
 

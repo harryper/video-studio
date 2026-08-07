@@ -206,6 +206,69 @@ COVER_INSTRUCTIONS = '''## 封面文案 (独立于正文, 额外生成)
 ```
 '''
 
+# ----- 提纲 (两阶段写稿: Phase 1) -----
+
+OUTLINE_SCHEMA_PROMPT = '''## 输出格式（严格遵守）
+只输出一个 JSON 对象，不要 markdown fence，不要任何说明：
+{
+  "facts": ["<知识点1，带具体数字>", "<知识点2>", ...],  // 3-5 条
+  "angle": "<本视频选择的叙事角度，一句话>",
+  "hook":  "<建议的开场钩子句，第一句就是信息本身，不超过 20 字>"
+}
+'''
+
+
+def build_outline_prompt(job):
+    """Pre-script outline prompt: ask LLM to enumerate facts + angle + hook
+    BEFORE writing the narration. Output is a JSON dict validated by
+    generate_outline(). Returned prompt includes the theme and a strict
+    schema so the response is parseable and grounded in real numbers."""
+    theme = job.get("theme") or ""
+    return (
+        f"你是一个科普短视频编导，正在为视频《{theme}》做写稿前的知识梳理。\n\n"
+        f"任务：列出这个主题最值得讲的 3-5 个核心知识点（必须带具体数字/事实），"
+        f"选择一个最有反常识冲击力的叙事角度，并写出开场钩子句。\n"
+        f"不要写正文，只输出提纲。\n\n"
+        f"{OUTLINE_SCHEMA_PROMPT}"
+    )
+
+
+def generate_outline(job):
+    """One Messages-API call returning (outline_dict, err_msg).
+
+    On success, outline_dict = {"facts": [str, ...], "angle": str, "hook": str}.
+    On any failure (network, JSON parse, missing fields), returns
+    (None, err_msg) so the daemon can mark the job 'error'."""
+    prompt = build_outline_prompt(job)
+    try:
+        text = llm_client.complete(
+            system=(
+                "You are a 抖音 short-video editor preparing an outline. "
+                "Output a single JSON object and nothing else — no markdown fence, "
+                "no prose around it."
+            ),
+            user=prompt,
+            max_tokens=1024,
+            timeout=120.0,
+        )
+    except Exception as e:
+        return None, f"LLM call failed: {e}"
+
+    for candidate in _iter_json_objects(text):
+        if not isinstance(candidate, dict):
+            continue
+        facts = candidate.get("facts")
+        angle = candidate.get("angle")
+        hook = candidate.get("hook")
+        if (
+            isinstance(facts, list) and all(isinstance(f, str) for f in facts)
+            and isinstance(angle, str) and angle
+            and isinstance(hook, str) and hook
+        ):
+            return {"facts": facts, "angle": angle, "hook": hook}, None
+    return None, f"could not parse outline JSON; tail={text[-200:]!r}"
+
+
 # ----- 科普赛道风格: lint 启发式 (守护进程落盘后做软警告, 不 reject) -----
 
 # AI 高频词黑名单 (Humanizer-zh 蒸馏, 科普适用)
@@ -320,7 +383,7 @@ def pending_jobs():
             job = load_job(path)
         except (OSError, json.JSONDecodeError):
             continue
-        if job.get("mode") == "video" and job.get("status") == "pending":
+        if job.get("mode") == "video" and job.get("status") in ("pending", "pending_script"):
             jobs.append(job)
     return sorted(jobs, key=lambda j: j.get("created_at", ""))
 
@@ -333,10 +396,27 @@ def build_prompt(job):
     target_seconds = int(job.get("render", {}).get("duration_sec") or DEFAULT_TARGET_SECONDS)
     min_chars, max_chars = script_length_bounds(target_seconds)
     target_chars = int(target_seconds * ESTIMATED_CHARS_PER_SECOND)
+
+    # 注入用户已确认的提纲（如果存在）。强制 LLM 优先使用这些事实，
+    # 不要编造其他数字。空 outline 字段（空字符串/None）一律不注入。
+    outline = job.get("outline") or {}
+    outline_block = ""
+    if outline:
+        facts = "\n".join(f"- {f}" for f in (outline.get("facts") or []) if f)
+        angle = (outline.get("angle") or "").strip()
+        hook = (outline.get("hook") or "").strip()
+        outline_block = (
+            "## 已确认的创作提纲（优先使用这些事实，不要编造其他数字）\n\n"
+            f"### 核心知识点\n{facts}\n\n"
+            f"### 叙事角度\n{angle}\n\n"
+            f"### 建议钩子\n{hook}\n\n"
+        )
+
     return (
         f"为 video-studio 写一段约 {target_seconds} 秒 ({target_chars} 字) 的短视频旁白稿。\n"
         f"主题：{theme}\n\n"
 
+        f"{outline_block}"
         f"{NARRATIVE_SKELETON}\n\n"
         f"{VOICE_GUIDE}\n\n"
         f"{ANTI_AI_RULES}\n\n"
@@ -771,14 +851,53 @@ def repair_script_length(job, min_chars, max_chars):
 
 
 def process_one(job):
-    """One script job end-to-end: write status, call LLM, finalize.
+    """One script job end-to-end across two phases.
 
-    Replaces the old run_agent + scrape_session_error pipeline. The LLM
-    is stateless — no agent session, no file-writing tools. The daemon
-    owns every disk write."""
+    Phase 1 (status='pending'): generate outline via LLM, save to job,
+        leave status='ready_outline' for user confirmation. Do NOT write
+        script yet.
+    Phase 2 (status='pending_script'): user confirmed outline. Generate
+        full narration script + cover, finalize to ready_script.
+    Other statuses fall through to legacy script-only behavior (defensive
+    fallback for any state that ever lands here without an outline)."""
+    if job.get("status") == "pending":
+        return _process_outline_phase(job)
+    # pending_script OR legacy fallback — both treat as "write the script"
+    return _process_script_phase(job)
+
+
+def _process_outline_phase(job):
+    """Phase 1: LLM outline → ready_outline. Does not write script.txt."""
+    job["status"] = "outlining"
+    job["error"] = None
+    save_job(job)
+
+    outline, err = generate_outline(job)
+    if err:
+        job["status"] = "error"
+        job["error"] = err
+        save_job(job)
+        log(f"{job['id']} outline failed: {err[:300]}")
+        return False
+
+    job["outline"] = outline
+    job["status"] = "ready_outline"
+    job["error"] = None
+    save_job(job)
+    log(f"{job['id']} ready_outline (facts={len(outline.get('facts', []))})")
+    return True
+
+
+def _process_script_phase(job):
+    """Phase 2: write the full script using the confirmed outline.
+
+    Keeps the original generate_script + finalize_from_script_file +
+    repair_script_length pipeline unchanged. writer_attempt counter is
+    reset to 0 here so a re-confirmed outline starts the length-retry
+    budget fresh."""
+    job["writer_attempt"] = 0
     job["status"] = "writing"
     job["error"] = None
-    job["writer_attempt"] = int(job.get("writer_attempt") or 0) + 1
     save_job(job)
 
     script, cover, err = generate_script(job)
