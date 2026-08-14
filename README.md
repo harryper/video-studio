@@ -1,102 +1,176 @@
 # video-studio
 
-把一个**主题**（如"光伏发电的原理"）自动做成一条 **60–90 秒的中文科普短视频**：配图 + 烧入字幕 + AI 配音 + 背景乐 + 开场钩子封面，全程零人工审。
+把一个**主题**（如“光伏发电的原理”）制作成中文科普短视频：提纲确认、旁白与封面、逐场景配图、烧入字幕、AI 配音、强制对齐、可选背景乐以及成片发布。
 
-本仓库是 [voice-studio](https://github.com/harryper/voice-studio) 的兄弟项目，承载共享 Web 工作流里 `mode='video'` 这一条线。TTS（MiniMax）和音色注册表跟 voice-studio 共享——见 [跨 skill 依赖](#跨-skill-依赖)。
+Web 端支持 `16:9`、`9:16`、`1:1` 三种画幅，时长可在 5–600 秒之间配置（默认 110 秒）。完整模式经过四个宿主机守护进程；`preview_only` 模式跳过耗时的配图与 Hyperframes 渲染，用于快速检查文稿、配音和字幕时序。
 
 ## 产物长什么样
 
-- **输入**：一个主题字符串 + 画幅（`16:9` 1920×1080 默认 / `9:16` 1080×1920 / `1:1` 1080×1080）。
-- **输出**：一条 mp4——0.8s 钩子封面 → 逐句配图 + 单行字幕 + 逐字对齐的配音 → 背景乐混音。
-- 真实跑过的主题：*光伏发电的原理*、*糖为什么是战略物资*、*如果不吃脂肪会怎么样*、*飞机起降为什么要拉窗板*。
-- 成片落在 `runs/{job_id}/final.mp4`，发布后写回 job 的 `mp4_url`（Cloudflare R2 的 presigned 链接，7 天过期，不是永久公开地址）。
+- **输入**：主题、画幅、目标时长，以及是否启用 `preview_only`。
+- **人工节点**：LLM 先生成提纲，用户可编辑知识点、叙事角度和开场钩子，确认后才开始写完整旁白。
+- **完整输出**：0.8 秒钩子封面 → 逐场景配图 → 烧入字幕 → AI 配音 → 可选背景乐。
+- **快速预览**：黑底字幕 + 配音的 `preview-{N}s.mp4`，不生成正式场景素材。
+- **本地产物**：完整成片在 `runs/{job_id}/final.mp4`；成功发布后，job 的 `final.mp4_url` 保存 Cloudflare R2 的 7 天 presigned URL。
+
+真实跑过的主题包括：*光伏发电的原理*、*糖为什么是战略物资*、*如果不吃脂肪会怎么样*、*飞机起降为什么要拉窗板*。
 
 ## 工作原理
 
-三个阶段，每段是一个监听触发文件的 systemd path unit。用户只提交主题，三段自动级联，**没有人审环节**：
+Web 应用负责创建和管理 job，四个 systemd path unit 分别唤醒 script、director、render、narrate 守护进程。提纲是当前唯一的人工确认节点；确认以后，各阶段自动级联。
 
-```
-   Web UI (Flask + gunicorn :9998)
-     POST /api/jobs → 建 v_<id>.json(pending) → touch .video-script-trigger
+```text
+Web UI（Flask + gunicorn :9998）
+  POST /api/jobs
+    → jobs/video/v_<id>.json（pending）
+    → .video-script-trigger
          │
          ▼
-   .video-script-trigger  ─▶ script 守护进程   LLM 写旁白 + 封面
-         │  status → ready_script            → touch .video-render-trigger
-         ▼
-   .video-render-trigger  ─▶ render 守护进程   puppeteer + headless chrome
-         │  status → rendered   出 raw.mp4(无音轨) → touch .video-narrate-trigger
-         ▼
-   .video-narrate-trigger ─▶ narrate 守护进程  TTS + 强制对齐 + 背景乐 + ffmpeg 合成
-            status → final   出 final.mp4
+script 守护进程
+  pending → outlining → ready_outline
+         │
+         └─ 用户编辑并确认提纲
+              → pending_script → writing → ready_script
+              → .video-director-trigger
+                       │
+                       ▼
+director 守护进程
+  ready_script → 生成 runs/<id>/shotlist.json → ready_shotlist
+  → .video-render-trigger
+                       │
+                       ▼
+render 守护进程
+  ready_shotlist → rendering → 生成 video/raw.mp4 → rendered
+  → .video-narrate-trigger
+                       │
+                       ▼
+narrate 守护进程
+  rendered → narrating
+  → TTS → stable-ts 强制对齐 → 按真实音频时序重渲染
+  → 可选 BGM → FFmpeg 合成 → R2 上传 → final
 ```
 
-触发器就是项目根目录下裸的 `touch` 标记文件（`.video-{script,render,narrate}-trigger`）。job 状态全在 `jobs/video/v_*.json`；触发器只负责唤醒下一段守护进程。守护进程只拣对应 status 的 job——所以从 Web UI 重跑某一段时会先把 status reset 回去。
+完整状态链为：
 
-底层几个不直观的机制（封面校验规则、Whisper 强制对齐、v9 字幕切分、preview 快速路径、脚本长度、重跑端点）都写在 **[docs/architecture.md](docs/architecture.md)**。
+```text
+pending → outlining → ready_outline → pending_script → writing
+→ ready_script → ready_shotlist → rendering → rendered → narrating → final
+```
+
+任一守护进程失败都会把 job 置为 `error` 并写入错误信息。job 状态保存在 `jobs/video/v_*.json`；项目根目录下的 `.video-{script,director,render,narrate}-trigger` 只负责唤醒对应阶段。
+
+### `preview_only` 快速路径
+
+`preview_only=true` 时仍会执行提纲确认、写稿、TTS 和强制对齐，但 script 阶段完成后直接把 job 置为 `rendered` 并触发 narrate。narrate 使用 `preview_caption_ffmpeg.py` 生成黑底字幕视频，不经过 director、素材生成或 Hyperframes。
+
+封面校验、stable-ts 强制对齐、v9 字幕切分、脚本长度和重跑入口等内部机制见 [docs/architecture.md](docs/architecture.md)。
 
 ## 快速开始
 
-Web 容器只跑 API + UI。守护进程在**宿主机**上由 systemd 跑，job 才能真正推进（需要 voice-studio 在 PATH 里）。
+Web 容器只运行 API 和 UI；完整视频流水线在宿主机上由 systemd 执行。Web 使用 Python 3.11，宿主机还需要准备 FFmpeg、渲染环境、stable-ts 以及各素材/TTS 服务所需配置。
 
 ```bash
 # Web
 pip install -r requirements.txt
 gunicorn -c gunicorn.conf.py app:app      # :9998
 
+# 或使用容器
+docker compose up -d --build
+
 # 守护进程（宿主机）
 sudo cp systemd/*.service systemd/*.path /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now \
   video-studio-script-watcher.path \
+  video-studio-director-watcher.path \
   video-studio-render-watcher.path \
   video-studio-narrate-watcher.path
 ```
 
-健康检查：`curl http://127.0.0.1:9998/api/health` 应返回 `{"ok": true}`。
+健康检查：
 
-需要的环境变量：`APP_PASSWORD`（登录）、`APP_COOKIE_SECRET`（cookie HMAC）、`VOICE_STUDIO_DIR`（跨 skill 路径）、`TZ=Asia/Shanghai`。
+```bash
+curl http://127.0.0.1:9998/api/health
+```
+
+正常响应包含 `"ok": true`。
+
+主要环境变量：
+
+- `APP_PASSWORD`：Web 登录密码。
+- `APP_COOKIE_SECRET`：登录 Cookie 的 HMAC secret。
+- `VOICE_STUDIO_DIR`：可选；覆盖 TTS 脚本和音色注册表所在目录，默认使用本仓库。
+- `LLM_CONFIG_FILE`：可选；覆盖 `llm_config.json` 路径。
+- `R2_CREDENTIALS_FILE`：可选；覆盖 R2 凭证文件路径。
+- `TZ=Asia/Shanghai`：保持容器、宿主机和 job 时间一致。
 
 ## 目录布局
 
-```
-app.py                          Flask Web 应用（UI + JSON API）
-gunicorn.conf.py                2 个 sync worker，60s 超时
-Dockerfile / docker-compose.yml 容器化 Web；绑定 :9998
-SKILL.md                        agent 在 chat 里操作 job 的规范流程
-docs/architecture.md            内部机制（维护者参考）
-docs/superpowers/specs/         逐个特性的设计文档 / 迭代史
+```text
+app.py                            Flask Web 应用（UI + JSON API）
+gunicorn.conf.py                  2 个 sync worker，默认监听 :9998
+Dockerfile / docker-compose.yml   Web 容器配置
+llm_config.json.example           LLM 连接配置示例
+SKILL.md                          agent 操作 video job 的规范流程
+docs/architecture.md              封面、对齐、字幕等内部机制
+docs/superpowers/                 特性设计与实施记录（默认被 gitignore）
 scripts/
-  process_video_script_jobs.py    script 守护进程（LLM 旁白 + cover.json 校验）
-  process_video_render_jobs.py    render 守护进程（puppeteer + chrome + 封面）
-  process_video_narrate_jobs.py   narrate 守护进程（TTS + 背景乐 + audio delay + 合成）
-  align_audio_stable_ts.py        Whisper 强制对齐
-  preview_caption_ffmpeg.py       黑底 preview mp4（快速路径）
-  minimax_tts*.py                 TTS 封装（voice-studio 共享）
-  pixabay_*.py / pexels_*.py       素材抓取 + 缓存（Pixabay 为主，Pexels 兼容旧 job）
-  upload_to_oss.py                发布到 R2
-  test_*.py                       单测（见下）
-  voice_registry.json             跟 voice-studio 共享
-systemd/                        3 个 path unit + 3 个 oneshot service
-templates/                      index.html, login.html, video_placeholder.html
-jobs/video/                     活跃 job JSON（一个 v_*.json 一条）
-runs/{job_id}/                  每个 job 的产物（script.txt / alignment.json / cover.json /
-                                keywords.json / composition/ / audio/ / final.mp4 / preview-*.mp4）
+  process_video_script_jobs.py      提纲 + 旁白 + cover.json
+  process_video_director_jobs.py    旁白分块 → shotlist.json
+  process_video_render_jobs.py      场景素材 + HTML composition + raw.mp4
+  process_video_narrate_jobs.py     TTS + 对齐 + 重渲染 + 混音 + 发布
+  llm_client.py                     Claude Messages API 薄封装
+  align_audio_stable_ts.py          Whisper/stable-ts 强制对齐
+  preview_caption_ffmpeg.py         preview_only 黑底字幕快速路径
+  minimax_tts.py / *_subs.py        本仓库自带的 MiniMax TTS 封装
+  minimax_image_gen.py              MiniMax 场景图生成
+  pixabay_*.py / pexels_*.py        素材搜索与缓存
+  upload_to_oss.py                  发布到 Cloudflare R2
+  voice_registry.json               本仓库音色注册表
+  test_*.py                         单元与 smoke/integration 测试
+systemd/                          4 个 path unit + 4 个 oneshot service
+templates/                        Web UI、登录页和占位视频模板
+jobs/video/                       活跃 job JSON
+archive/video/                    已归档 job JSON
+runs/{job_id}/                    每个 job 的工作目录与产物
 ```
+
+典型 `runs/{job_id}/`：
+
+```text
+script.txt                       最终旁白
+cover.json                       0.8 秒封面文案与高亮范围
+shotlist.json                    director 生成的逐场景视觉规格
+alignment.json                   基于真实音频的字/句时间戳
+composition/
+  index.html                     Hyperframes composition
+  chunks.json                    固定的场景切分
+  images/ / videos/              场景素材
+  video-only.mp4                 无音轨渲染结果
+video/raw.mp4                    render 阶段输出
+audio/voice.mp3                  TTS 配音
+audio/mixed.mp3                  配音或配音+BGM
+final.mp4                        完整成片
+preview-{N}s.mp4                 preview_only 产物
+```
+
+提纲保存在 job JSON 的 `outline` 字段，不单独写入 `runs/`。
 
 ## 测试
 
-无外部依赖，全部加起来 < 1s。改了对齐 / 折行 / 封面 layout / `templates/index.html` 之后跑一遍：
+测试脚本可逐个运行，也可以遍历执行：
 
 ```bash
 for t in scripts/test_*.py; do python3 "$t"; done
 ```
 
-单测覆盖：小数点合并对齐、字幕折行 + v9 切分、封面 layout + 校验 + audio delay、alignment→subtimes/scene_times、kinetic overlay 时序、visual specs、pixabay 缓存、脚本长度校验、脚本修复启发式、pexels skip 决策；`test_html_output.py` 是 hyperframes HTML 结构 smoke。
+覆盖范围包括：提纲、脚本长度与修复、LLM 响应解析、director/shotlist、场景切分、字幕折行、封面 layout、alignment→scene/sub times、视觉规格、Pixabay 缓存、渲染 HTML 以及 narrate 音频延迟。
 
-## 跨 skill 依赖
+多数单元测试不调用外部服务，但完整遍历中包含 smoke/integration 路径；部分测试需要可写的 `/var/log/video-studio`、网络访问或本机渲染依赖。排查单一模块时，优先直接运行对应的 `scripts/test_*.py`。
 
-`scripts/minimax_tts.py`、`minimax_tts_subs.py`、`voice_registry.json` 都按绝对路径从 voice-studio 读，不通过 import。systemd 的 `Environment=PATH` 把 `voice-studio/scripts/` 加进去，子进程能解析。
+## LLM、TTS 与发布依赖
 
-默认音色（新建 job 时写）：`Chinese_casual_instructor_nv1`（显示名"活力讲师"，speed 1.15）。早于该默认切换创建的 job JSON 仍显式持有旧音色，需重新提交才会用当前默认。
-
-密钥文件 `scripts/minimax_api_key.txt`、`pexels_api_key.txt`、`pixabay_api_key.txt` 被 `.gitignore` 排除。
+- script、director 和视觉规格提取通过 `scripts/llm_client.py` 调用 Claude Messages API；连接信息默认从项目根目录的 `llm_config.json` 读取，环境变量优先。
+- `scripts/minimax_tts.py`、`scripts/minimax_tts_subs.py` 和 `scripts/voice_registry.json` 均有项目内副本。`VOICE_STUDIO_DIR` 可改指其他兼容目录。
+- 新建 job 默认音色为 `Chinese_casual_instructor_nv1`（显示名“活力讲师”，speed 1.15）。旧 job 会继续使用各自 JSON 中保存的音色。
+- R2 凭证优先从 `R2_CREDENTIALS_FILE` 读取，其次读取 gitignored 的 `scripts/r2_credentials.md`；最终 URL 是最长 7 天有效的 presigned URL。
+- `scripts/minimax_api_key.txt`、`scripts/pexels_api_key.txt`、`scripts/pixabay_api_key.txt`、`scripts/r2_credentials.md` 和 `llm_config.json` 都被 `.gitignore` 排除。
