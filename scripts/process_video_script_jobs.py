@@ -24,6 +24,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import llm_client
@@ -84,6 +85,412 @@ LOG_FILE = Path("/var/log/video-studio/video-script-watcher.log")
 # 旧的段子风格 (MEME_GUIDE) + 风格/段子参考文件注入已从 build_prompt 中撤下,
 # 相关语料/参考文件也已从仓库删除。当前脚本 prompt 只保留中立骨架 (主题 +
 # 长度 + 纯文本 + JSON 输出)。封面 (COVER_INSTRUCTIONS) 及其校验逻辑保留不变。
+
+# ----- Editorial request 校验 -----
+
+VALID_TONE = ("auto", "故事感", "冷峻", "幽默克制", "观点解释")
+VALID_GOAL = ("balanced", "completion", "share", "comment")
+VALID_FACT_STRICTNESS = ("standard", "high")
+REQUEST_FIELD_LIMITS = {"audience": 80, "tone": 40, "angle": 80}
+
+
+def validate_editorial_request(data: dict) -> tuple[Optional[dict], str]:
+    """校验并规范化 editorial request. 返回 (request_dict, None) 或 (None, err_msg).
+
+    字段缺失或为空字符串 → 用默认值填充. 非法 enum / 超长 / 非字符串 → 拒绝.
+    """
+    if not isinstance(data, dict):
+        return None, "editorial request 必须是 dict"
+    out = {
+        "audience": "普通用户",
+        "tone": "auto",
+        "angle": "auto",
+        "goal": "balanced",
+        "fact_strictness": "standard",
+    }
+    for k, limit in REQUEST_FIELD_LIMITS.items():
+        v = data.get(k)
+        if v is None or (isinstance(v, str) and not v.strip()):
+            continue
+        if not isinstance(v, str):
+            return None, f"{k} 必须是字符串"
+        if len(v) > limit:
+            return None, f"{k} 长度 {len(v)} 超过上限 {limit}"
+        out[k] = v.strip()
+    for k, choices in (("tone", VALID_TONE), ("goal", VALID_GOAL),
+                       ("fact_strictness", VALID_FACT_STRICTNESS)):
+        v = data.get(k)
+        if v is None:
+            continue
+        if v not in choices:
+            return None, f"{k} 必须是 {', '.join(choices)} 之一; 收到 {v!r}"
+        out[k] = v
+    return out, None
+
+
+# ----- Story Brief -----
+
+VALID_CONTENT_LANES = (
+    "historical_power", "science_explainer", "business_economy",
+    "people_story", "myth_busting",
+)
+
+STORY_BRIEF_SCHEMA_PROMPT = '''## 输出格式（严格遵守）
+只输出一个 JSON 对象, 不要 markdown fence, 不要任何说明:
+{
+  "content_lane": "<historical_power | science_explainer | business_economy | people_story | myth_busting>",
+  "candidate_angles": [
+    {"angle": "<切入角度, 不超过 30 字>", "core_thesis": "<单句核心命题, 不超过 40 字>",
+     "why_it_spreads": "<为什么这个角度容易传播, 一句话>"},
+    // 共 3 条, 三条 angle 文本不能重复, core_thesis 不能空泛 (必须可证伪)
+  ],
+  "chosen_angle": "<最终选定的角度, 不超过 30 字>",
+  "core_thesis": "<单句核心命题, 不超过 40 字, 必须可证伪>",
+  "audience_misconception": "<目标受众对这个主题最常见的误解, 一句话>",
+  "opening_scene": "<开场前 2 句必须呈现的具体物件/动作/数字, 一句话>",
+  "evidence_chain": [
+    "<因果链第 1 步, 必须包含 '因为/所以/因此/通过/从而' 等因果连接, ≥ 8 字>",
+    "<因果链第 2 步, 同上>",
+    "<因果链第 3 步, 同上>"
+  ],  // 3-5 条, 因果顺序, 禁止纯名词列表
+  "twist": "<认知翻转点, 一句话, 不写完整判断句>",
+  "visual_anchors": ["<可拍摄或可绘制的具体物件>", "..."],  // 至少 2 个
+  "risk_claims": [
+    {"claim": "<具体断言, 一句话>", "risk": "<high | medium | low>",
+     "instruction": "<写作时如何处理 (禁用 / 弱化 / 加范围 / 加来源占位)>"}
+  ]  // 至少 1 条 high 风险的禁区断言
+}
+'''
+
+STORY_BRIEF_SYSTEM = (
+    "You are a 抖音 short-video story editor preparing a STORY BRIEF before "
+    "any narration is written. Output a single JSON object and nothing else."
+)
+
+
+def build_story_brief_prompt(job, request):
+    """Story brief prompt: 主题 + 用户 editorial request + brief schema."""
+    theme = job.get("theme") or ""
+    audience = request.get("audience", "普通用户")
+    tone = request.get("tone", "auto")
+    angle = request.get("angle", "auto")
+    goal = request.get("goal", "balanced")
+    fact = request.get("fact_strictness", "standard")
+    angle_note = (
+        f"用户指定的切入角度: {angle}. 必须把 chosen_angle 设为这个角度, "
+        f"但仍生成 3 个 candidate_angles 体现对比."
+        if angle != "auto"
+        else "angle 是 auto. 由你从 candidate_angles 中选一个最合适的作为 chosen_angle."
+    )
+    return (
+        f"为 video-studio 短视频《{theme}》生成 STORY BRIEF (写稿前的选题策划).\n\n"
+        f"## 用户创作设置\n"
+        f"- 受众: {audience}\n"
+        f"- 写法: {tone}\n"
+        f"- 切入角度: {angle}\n"
+        f"- 传播目标: {goal} (completion=完播 / share=转发 / comment=讨论 / balanced=均衡)\n"
+        f"- 事实严格度: {fact} (high=减少无法验证数字和绝对化表述)\n\n"
+        f"## 关键约束\n"
+        f"1. {angle_note}\n"
+        f"2. core_thesis 必须是单一可证伪命题, 禁止空泛 (如 'X 很重要' 'Y 影响深远').\n"
+        f"3. evidence_chain 必须有 3-5 条, 每条都包含因果连接词, 禁止纯名词列表.\n"
+        f"4. risk_claims 至少 1 条 high 风险, 列出写作时需禁用或弱化的断言.\n"
+        f"5. visual_anchors 至少 2 个, 必须是可拍摄或可绘制动作的具体物件.\n"
+        f"6. candidate_angles 三条 angle 文本不能重复.\n\n"
+        f"{STORY_BRIEF_SCHEMA_PROMPT}"
+    )
+
+
+def _validate_story_brief_dict(brief):
+    """Apply spec §4 validation rules to a parsed brief dict. Returns (cleaned, None) or (None, err)."""
+    if not isinstance(brief, dict):
+        return None, "brief 不是 dict"
+    lane = brief.get("content_lane")
+    if lane not in VALID_CONTENT_LANES:
+        return None, f"content_lane 必须是 {', '.join(VALID_CONTENT_LANES)}; 收到 {lane!r}"
+    angles = brief.get("candidate_angles")
+    if not isinstance(angles, list) or len(angles) != 3:
+        return None, "candidate_angles 必须正好 3 条"
+    texts = []
+    for i, a in enumerate(angles):
+        if not isinstance(a, dict):
+            return None, f"candidate_angles[{i}] 不是 dict"
+        ang = a.get("angle")
+        thesis = a.get("core_thesis")
+        why = a.get("why_it_spreads")
+        if not isinstance(ang, str) or not ang.strip():
+            return None, f"candidate_angles[{i}].angle 缺失"
+        if not isinstance(thesis, str) or not thesis.strip():
+            return None, f"candidate_angles[{i}].core_thesis 缺失"
+        if not isinstance(why, str) or not why.strip():
+            return None, f"candidate_angles[{i}].why_it_spreads 缺失"
+        texts.append(ang.strip())
+    if len(set(texts)) != 3:
+        return None, "candidate_angles 三条 angle 文本不能重复"
+    for field in ("chosen_angle", "core_thesis", "audience_misconception",
+                  "opening_scene", "twist"):
+        v = brief.get(field)
+        if not isinstance(v, str) or not v.strip():
+            return None, f"{field} 缺失"
+    chain = brief.get("evidence_chain")
+    if not isinstance(chain, list) or not (3 <= len(chain) <= 5):
+        return None, "evidence_chain 必须 3-5 条"
+    for i, e in enumerate(chain):
+        if not isinstance(e, str) or len(e.strip()) < 8:
+            return None, f"evidence_chain[{i}] 长度 {len(e) if isinstance(e, str) else 0} < 8 (防纯名词列表)"
+    anchors = brief.get("visual_anchors")
+    if not isinstance(anchors, list) or len(anchors) < 2:
+        return None, "visual_anchors 必须 ≥ 2 个"
+    risks = brief.get("risk_claims")
+    if not isinstance(risks, list) or len(risks) < 1:
+        return None, "risk_claims 必须 ≥ 1 条"
+    for i, r in enumerate(risks):
+        if not isinstance(r, dict):
+            return None, f"risk_claims[{i}] 不是 dict"
+        if r.get("risk") not in ("high", "medium", "low"):
+            return None, f"risk_claims[{i}].risk 非法"
+        if not isinstance(r.get("claim"), str) or not r["claim"].strip():
+            return None, f"risk_claims[{i}].claim 缺失"
+        if not isinstance(r.get("instruction"), str) or not r["instruction"].strip():
+            return None, f"risk_claims[{i}].instruction 缺失"
+    return brief, None
+
+
+def parse_story_brief(text):
+    """从 LLM 文本提取并校验 brief. (brief, None) 或 (None, err_msg)."""
+    if not text:
+        return None, "empty LLM response"
+    for cand in _iter_json_objects(text):
+        if not isinstance(cand, dict):
+            continue
+        cleaned, err = _validate_story_brief_dict(cand)
+        if cleaned is not None:
+            return cleaned, None
+    return None, "could not parse story_brief (LLM response not valid JSON or missing required fields)"
+
+
+def generate_story_brief(job, request):
+    """LLM call: 返回 (brief_dict, None) 或 (None, err_msg)."""
+    prompt = build_story_brief_prompt(job, request)
+    try:
+        text = llm_client.complete(
+            system=STORY_BRIEF_SYSTEM,
+            user=prompt,
+            max_tokens=2048,
+            timeout=180.0,
+        )
+    except Exception as e:
+        return None, f"LLM call failed: {e}"
+
+    brief, err = parse_story_brief(text)
+    if brief is None:
+        return None, err
+
+    # 用户指定 angle 时, 强制 chosen_angle 等于用户输入 (即使 LLM 给了别的)
+    if request.get("angle", "auto") != "auto":
+        brief["chosen_angle"] = request["angle"]
+    return brief, None
+
+
+# ----- Quality Report -----
+
+QUALITY_DIMENSION_MAX = {
+    "factual_safety": 20,
+    "distinctive_angle": 20,
+    "opening_hook": 20,
+    "causal_clarity": 20,
+    "spoken_rhythm": 10,
+    "ending_payoff": 10,
+}
+QUALITY_VALID_VERDICTS = ("pass", "repair", "fatal")
+
+QUALITY_REPORT_SCHEMA_PROMPT = '''## 输出格式（严格遵守）
+只输出一个 JSON 对象, 不要 markdown fence, 不要任何说明:
+{
+  "score": <0-100 整数, = sum(dimensions)>,
+  "dimensions": {
+    "factual_safety": <0-20, 不夸张绝对化; 不违背 risk_claims; 因果强度与论据匹配>,
+    "distinctive_angle": <0-20, 是否围绕单一角度; 是否具备该主题专属视角>,
+    "opening_hook": <0-20, 前 3 句有具体场景、反差和未完结的认知缺口>,
+    "causal_clarity": <0-20, 论证逐层推进, 数字和事实服务于因果>,
+    "spoken_rhythm": <0-10, 自然口语、短长句交替、符合 clause 约束>,
+    "ending_payoff": <0-10, 回扣开场且给出理解升级, 不是复读结论>
+  },  // 总和必须等于 score (LLM 浮点漂移容差 ±1)
+  "must_fix": [
+    {"category": "<同上 6 维度之一>", "instruction": "<具体修改指令, 不写「优化得更好」>"}
+  ],  // 可空数组; 但非空时每项必须可执行
+  "strengths": ["..."],
+  "verdict": "<pass | repair | fatal>"
+}
+'''
+
+QUALITY_SYSTEM = (
+    "You are a 抖音 short-video editorial reviewer scoring a script on 6 "
+    "dimensions. You only output JSON — never edit the script yourself. "
+    "If factual_safety is below 12 OR score is below 60, verdict MUST be 'fatal'."
+)
+
+
+def build_quality_prompt(job, brief, script):
+    """评审 prompt: brief + script + schema."""
+    theme = job.get("theme") or ""
+    risks = brief.get("risk_claims", [])
+    risk_lines = "\n".join(
+        f"- [{r.get('risk')}] {r.get('claim')}: {r.get('instruction')}"
+        for r in risks
+    ) or "- (无)"
+    return (
+        f"你是 video-studio 短视频编辑, 评审旁白稿. 主题: {theme}.\n\n"
+        f"## 核心命题 (story brief)\n{brief.get('core_thesis', '')}\n\n"
+        f"## 写作禁区 (risk_claims, 必须检查正文是否违反)\n{risk_lines}\n\n"
+        f"## 待评审旁白稿 (共 {len(script)} 字)\n{script}\n\n"
+        f"## 评分要求\n"
+        f"1. factual_safety < 12 或 score < 60 → verdict='fatal'.\n"
+        f"2. must_fix 每项必须可执行 (e.g. '将「最早配给」改为「与培根同批进入配给」'), "
+        f"禁止写「优化得更生动」类空指令.\n"
+        f"3. 维度总和必须等于 score, 不可漂移超过 ±1.\n\n"
+        f"{QUALITY_REPORT_SCHEMA_PROMPT}"
+    )
+
+
+def _validate_quality_report_dict(rep):
+    if not isinstance(rep, dict):
+        return None, "report 不是 dict"
+    score = rep.get("score")
+    if not isinstance(score, int) or not (0 <= score <= 100):
+        return None, f"score 必须是 0-100 整数; 收到 {score!r}"
+    dims = rep.get("dimensions")
+    if not isinstance(dims, dict):
+        return None, "dimensions 缺失"
+    dim_sum = 0
+    for k, mx in QUALITY_DIMENSION_MAX.items():
+        v = dims.get(k)
+        if not isinstance(v, int) or not (0 <= v <= mx):
+            return None, f"dimensions.{k} 必须是 0-{mx} 整数; 收到 {v!r}"
+        dim_sum += v
+    for k in dims:
+        if k not in QUALITY_DIMENSION_MAX:
+            return None, f"dimensions 包含未知键 {k!r}"
+    if abs(dim_sum - score) > 1:
+        return None, f"dimensions 总和 {dim_sum} 与 score {score} 差距超过 ±1"
+    verdict = rep.get("verdict")
+    if verdict not in QUALITY_VALID_VERDICTS:
+        return None, f"verdict 必须是 {QUALITY_VALID_VERDICTS}; 收到 {verdict!r}"
+    must = rep.get("must_fix")
+    if not isinstance(must, list):
+        return None, "must_fix 必须是 list"
+    for i, m in enumerate(must):
+        if not isinstance(m, dict):
+            return None, f"must_fix[{i}] 不是 dict"
+        cat = m.get("category")
+        instr = m.get("instruction")
+        if cat not in QUALITY_DIMENSION_MAX:
+            return None, f"must_fix[{i}].category 必须是 6 维度之一; 收到 {cat!r}"
+        if not isinstance(instr, str) or not instr.strip():
+            return None, f"must_fix[{i}].instruction 缺失"
+    strengths = rep.get("strengths")
+    if not isinstance(strengths, list):
+        return None, "strengths 必须是 list"
+    return {
+        "score": score,
+        "dimensions": {k: dims[k] for k in QUALITY_DIMENSION_MAX},
+        "must_fix": must,
+        "strengths": strengths,
+        "verdict": verdict,
+    }, None
+
+
+def parse_quality_report(text):
+    if not text:
+        return None, "empty LLM response"
+    for cand in _iter_json_objects(text):
+        if not isinstance(cand, dict):
+            continue
+        cleaned, err = _validate_quality_report_dict(cand)
+        if cleaned is not None:
+            return cleaned, None
+    return None, "could not parse quality_report (LLM response not valid JSON or missing required fields)"
+
+
+def generate_quality_report(job, brief, script):
+    prompt = build_quality_prompt(job, brief, script)
+    try:
+        text = llm_client.complete(
+            system=QUALITY_SYSTEM,
+            user=prompt,
+            max_tokens=1024,
+            timeout=120.0,
+        )
+    except Exception as e:
+        return None, f"LLM call failed ({type(e).__name__})"
+    return parse_quality_report(text)
+
+
+# ----- Repair Pass -----
+
+REPAIR_SYSTEM = (
+    "You revise an existing 抖音 short-video script based on explicit must_fix "
+    "instructions. Return a single JSON object: {\"script\": ..., \"cover\": ...}. "
+    "Do not rewrite paragraphs not flagged for revision."
+)
+
+
+def build_editorial_repair_prompt(job, brief, report, current_script,
+                                  min_chars, max_chars, length_gap_str):
+    """Targeted revision prompt. 必须传 must_fix + core_thesis + 字数范围 + length gap."""
+    theme = job.get("theme") or ""
+    target_seconds = int((job.get("render") or {}).get("duration_sec") or DEFAULT_TARGET_SECONDS)
+    must_lines = "\n".join(
+        f"- [{m.get('category')}] {m.get('instruction')}"
+        for m in (report.get("must_fix") or [])
+    ) or "- (无)"
+    strengths = report.get("strengths") or []
+    strength_lines = "\n".join(f"- {s}" for s in strengths) or "- (无)"
+    cur_len = len(current_script or "")
+    return (
+        f"修改已写好的 video-studio 旁白稿. 主题: {theme}. "
+        f"目标 {target_seconds}s, 字数必须落在 {min_chars}-{max_chars} 区间.\n\n"
+        f"## 核心命题 (不能改)\n{brief.get('core_thesis', '')}\n\n"
+        f"## 开场物件 (不能丢)\n{brief.get('opening_scene', '')}\n\n"
+        f"## 因果链 (顺序不能乱)\n"
+        + "\n".join(f"{i+1}. {e}" for i, e in enumerate(brief.get("evidence_chain") or []))
+        + "\n\n"
+        f"## 评审 must_fix (按条修)\n{must_lines}\n\n"
+        f"## 已有优点 (不要改写这些段落)\n{strength_lines}\n\n"
+        f"## 字数缺口\n{length_gap_str}\n\n"
+        f"## 当前全文 ({cur_len} 字)\n{current_script}\n\n"
+        f"## 硬约束\n"
+        f"1. 输出长度必须落在 {min_chars}-{max_chars} 字区间内.\n"
+        f"2. 必须逐条响应 must_fix, 不能跳过任何 category.\n"
+        f"3. 不能改写「已有优点」段落 (避免整体重写).\n"
+        f"4. 不能写开放式问号 / 抒情结尾 / '希望对你有帮助'.\n"
+        f"5. 高风险 risk_claims 仍按原 instruction 处理.\n"
+        f"6. cover 字段如未改动可保持原值, 但必须重新校验 main_highlight.\n\n"
+        f"## 输出格式\n"
+        f'{{"script": "<修订稿>", "cover": {{"main": "...", "main_highlight": [s, e], "sub": "..."}}}}'
+    )
+
+
+def generate_repair_pass(job, brief, report, current_script,
+                         min_chars, max_chars, length_gap_str):
+    prompt = build_editorial_repair_prompt(
+        job, brief, report, current_script, min_chars, max_chars, length_gap_str,
+    )
+    try:
+        text = llm_client.complete(
+            system=REPAIR_SYSTEM,
+            user=prompt,
+            max_tokens=4096,
+            timeout=300.0,
+        )
+    except Exception as e:
+        return None, None, f"LLM call failed ({type(e).__name__})"
+    script, cover, err = _parse_script_response(text)
+    if script is None:
+        return None, None, err
+    validated_cover = parse_cover_validation(cover) if cover else None
+    return script, validated_cover, None
+
 
 # ----- 科普赛道正文风格 (4 个块, 拼装顺序见 build_prompt) -----
 
@@ -444,7 +851,7 @@ def build_prompt(job):
     )
 
 
-def build_repair_prompt(job, current_script, min_chars, max_chars):
+def build_length_repair_prompt(job, current_script, min_chars, max_chars):
     """Targeted length-repair prompt. The LLM is asked to return a JSON
     {"script": <revised>, "cover": <unchanged or re-validated>}; the daemon
     writes the file. Replaces the old agent that self-overwrote script.txt."""
@@ -479,6 +886,13 @@ def build_repair_prompt(job, current_script, min_chars, max_chars):
         f'{{"script": "<修订稿全文>", "cover": {{"main": "...", "main_highlight": [s, e], "sub": "..."}}}}\n'
         f"cover 字段如未改动可保持原值, 但必须重新验证 main_highlight 是否仍是语义完整的钩眼词."
     )
+
+
+def build_repair_prompt(job, current_script, min_chars, max_chars):
+    """Backward-compat thin wrapper. Delegates to build_length_repair_prompt so
+    older callers (test_script_engine_decouple, test_script_repair) keep working
+    with the original 4-arg signature."""
+    return build_length_repair_prompt(job, current_script, min_chars, max_chars)
 
 
 def _parse_script_response(text):
@@ -594,7 +1008,7 @@ def generate_script(job):
 
 def generate_script_repair(job, current_script, min_chars, max_chars):
     """One Messages-API repair pass. Same artifact contract as generate_script."""
-    prompt = build_repair_prompt(job, current_script, min_chars, max_chars)
+    prompt = build_length_repair_prompt(job, current_script, min_chars, max_chars)
     try:
         text = llm_client.complete(
             system=(
