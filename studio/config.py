@@ -11,3 +11,5 @@ class Settings(BaseSettings):
     provider_name: str = "stub"
     search_provider_name: str = "stub"
     lease_seconds: int = 300
+    search_provider_url: str = ""
+    search_provider_token: str = ""

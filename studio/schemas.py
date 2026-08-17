@@ -1,13 +1,17 @@
-"""Payload validation dispatch.
+"""Payload validation dispatch plus shared Pydantic schemas.
 
-Task 2 only validates the minimal contract that every artifact payload must
-satisfy (it must be a dict-like JSON value). Future tasks register concrete
-Pydantic models against this dispatcher.
+The ``register`` / ``validate_payload`` helpers underpin the artifact
+repository (Task 2). Pydantic models for Content Studio's structured content
+live here too so Tasks 5+ can import them from a single place without
+inventing new modules for each task.
 """
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
+
+from pydantic import BaseModel
 
 _VALIDATORS: dict[str, Any] = {}
 
@@ -44,4 +48,30 @@ def validate_payload(kind: str, payload: Any) -> dict[str, Any]:
     return dict(result)
 
 
-__all__ = ["register", "validate_payload"]
+class TopicDiagnosis(BaseModel):
+    """Stub schema used by Task 4.
+
+    Task 5 extends this with ``audience_prior_knowledge``, ``central_tension``,
+    ``misconceptions``, ``scope`` and ``excluded_topics``. For Task 4 only
+    ``core_question`` is needed so providers can wire their contract tests.
+    """
+
+    core_question: str
+
+
+class SourceDocument(BaseModel):
+    """A search result returned by :class:`SearchProvider`."""
+
+    title: str
+    url: str
+    snippet: str
+    publisher: str
+    published_at: datetime | None = None
+
+
+__all__ = [
+    "SourceDocument",
+    "TopicDiagnosis",
+    "register",
+    "validate_payload",
+]
