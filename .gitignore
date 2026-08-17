@@ -46,3 +46,18 @@ backups/
 # SDD scratch (per user: gitignore spec/plan/progress)
 docs/superpowers/
 .superpowers/
+
+# Content Studio toolchains
+.venv/
+node_modules/
+*.db
+*.db-wal
+*.db-shm
+media/
+web/dist/
+web/.vite/
+studio.egg-info/
+dist/
+build/
+web/tsconfig.tsbuildinfo
+*.tsbuildinfo
