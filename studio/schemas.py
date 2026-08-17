@@ -377,9 +377,71 @@ def _validate_approved_script(payload: dict[str, Any]) -> dict[str, Any]:
     return ApprovedScript.model_validate(payload).model_dump(mode="json")
 
 
+class CueBlock(BaseModel):
+    """One subtitle-sized slice of the spoken text.
+
+    ``id`` is a stable hash of the block's text so the same span keeps the
+    same id across regenerations and downstream TTS/alignment can key its
+    metadata to the block without depending on array position.
+    """
+
+    id: str
+    index: int
+    paragraph_id: str
+    text: str
+    char_start: int
+    char_end: int
+
+
+class PronunciationHint(BaseModel):
+    """Provider-supplied pronunciation, emphasis, or pause metadata for one cue.
+
+    Only fields the model filled in are non-``None``; the speech stage
+    silently drops hints that are nonsensical (e.g. negative pause) and
+    refuses hints whose ``cue_id`` is not in the plan.
+    """
+
+    cue_id: str
+    phonetic: str | None = None
+    emphasis: Literal["strong", "weak"] | None = None
+    pause_ms_before: int | None = None
+
+
+class SpeechPlan(BaseModel):
+    """Immutable derivation of an :class:`ApprovedScript` for downstream TTS.
+
+    The plan is purely a structural projection: ``spoken_text`` is the
+    approved editorial text unchanged (semantic identity is asserted by
+    :func:`studio.content.speech.assert_semantic_identity`, not by this
+    model); provider output is permitted only for the ``*_hints`` /
+    ``emphasis`` / ``pause_ms`` fields, all keyed to existing
+    :class:`CueBlock` ids.
+    """
+
+    payload_kind: Literal["speech_plan"] = "speech_plan"
+    id: str
+    source_revision_id: str
+    editorial_text_source: str
+    spoken_text: str
+    duration_sec: float
+    cue_blocks: list[CueBlock]
+    pronunciation_hints: list[PronunciationHint] = []
+    emphasis: list[str] = []
+    pause_ms: dict[str, int] = {}
+    created_at: datetime
+
+
+@register("speech_plan")
+def _validate_speech_plan(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate ``kind="speech_plan"`` payloads as :class:`SpeechPlan`."""
+
+    return SpeechPlan.model_validate(payload).model_dump(mode="json")
+
+
 __all__ = [
     "AcceptedPitch",
     "ApprovedScript",
+    "CueBlock",
     "DraftParagraph",
     "DraftRevision",
     "EditorialComment",
@@ -388,9 +450,11 @@ __all__ = [
     "NarrativeBeat",
     "NarrativePlan",
     "PitchPayloadKind",
+    "PronunciationHint",
     "RepetitionReport",
     "ResearchPacket",
     "SourceDocument",
+    "SpeechPlan",
     "StoryPitch",
     "StoryPitchSet",
     "TopicDiagnosis",
