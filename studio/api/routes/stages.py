@@ -16,9 +16,15 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from studio import db as studio_db
 from studio.artifacts import ArtifactRepository
+from studio.content.review import (
+    NewerDraftExists,
+    ReviewService,
+    approve_draft,
+    list_comments,
+)
 from studio.jobs import LeaseQueue, Stage
 from studio.providers.base import ModelProvider
-from studio.schemas import StoryPitch
+from studio.schemas import DraftRevision, EditorialComment, ResearchPacket, StoryPitch
 from studio.workflow import accept_pitch, current_pitch_set
 
 router = APIRouter(prefix="/api/projects", tags=["stages"])
@@ -116,6 +122,89 @@ def accept_pitch_route(
     job = LeaseQueue(session).enqueue(project_id, Stage.NARRATIVE, [artifact.id])
     session.commit()
     return {"artifact_id": artifact.id, "job_id": job.id}
+
+
+# ---------------------------------------------------------------------------
+# review: rewrite + approve
+# ---------------------------------------------------------------------------
+
+
+def _load_draft(
+    session: Session, project_id: str, draft_artifact_id: str
+) -> DraftRevision:
+    repo = ArtifactRepository(session)
+    artifact = repo.get(draft_artifact_id)
+    if artifact is None or artifact.project_id != project_id:
+        raise HTTPException(status_code=404, detail="draft artifact not found")
+    if artifact.kind != "draft":
+        raise HTTPException(
+            status_code=400,
+            detail=f"artifact {draft_artifact_id!r} is not a draft",
+        )
+    return DraftRevision.model_validate(artifact.payload)
+
+
+def _load_research(
+    session: Session, project_id: str
+) -> ResearchPacket | None:
+    repo = ArtifactRepository(session)
+    artifact = repo.current(project_id, "research")
+    if artifact is None:
+        return None
+    return ResearchPacket.model_validate(artifact.payload)
+
+
+@router.post("/{project_id}/drafts/{draft_artifact_id}/rewrite", status_code=201)
+def rewrite_route(
+    project_id: str,
+    draft_artifact_id: str,
+    session: Session = Depends(get_session),  # noqa: B008 — FastAPI dependency
+) -> dict[str, str]:
+    repo = ArtifactRepository(session)
+    draft_artifact = repo.get(draft_artifact_id)
+    if draft_artifact is None or draft_artifact.project_id != project_id:
+        raise HTTPException(status_code=404, detail="draft artifact not found")
+    draft = DraftRevision.model_validate(draft_artifact.payload)
+
+    provider = get_default_provider()
+    if provider is None:
+        raise HTTPException(
+            status_code=503,
+            detail="rewrite requires the model provider to be configured",
+        )
+    research = _load_research(session, project_id)
+
+    comments: list[EditorialComment] = list_comments(
+        project_id, draft_artifact_id, session
+    )
+    new_revision = ReviewService(provider, research).rewrite(draft, comments)
+    artifact = repo.create(
+        project_id,
+        "draft",
+        new_revision.model_dump(mode="json"),
+        parent_id=draft_artifact_id,
+        created_by="editor",
+    )
+    repo.accept(project_id, artifact.id)
+    session.commit()
+    return {"artifact_id": artifact.id}
+
+
+@router.post("/{project_id}/drafts/{draft_artifact_id}/approve", status_code=201)
+def approve_route(
+    project_id: str,
+    draft_artifact_id: str,
+    session: Session = Depends(get_session),  # noqa: B008 — FastAPI dependency
+) -> dict[str, str]:
+    try:
+        artifact = approve_draft(project_id, draft_artifact_id, session)
+    except NewerDraftExists as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"artifact_id": artifact.id}
 
 
 __all__ = ["get_default_provider", "router", "set_default_provider"]

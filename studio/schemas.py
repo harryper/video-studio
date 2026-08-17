@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 _VALIDATORS: dict[str, Any] = {}
 
@@ -250,6 +250,16 @@ class DraftRevision(BaseModel):
     author_note: str = ""
     created_at: datetime
 
+    def paragraph(self, paragraph_id: str) -> str:
+        """Return the text of ``paragraph_id``; raises ``KeyError`` if absent."""
+
+        for paragraph in self.paragraphs:
+            if paragraph.id == paragraph_id:
+                return paragraph.text
+        raise KeyError(
+            f"paragraph {paragraph_id!r} is not in draft {self.id!r}"
+        )
+
 
 class RepetitionReport(BaseModel):
     """Result of comparing a draft's fingerprints against recent drafts.
@@ -270,6 +280,50 @@ class RepetitionReport(BaseModel):
     ending_shape_similarity: float = 0.0
     comparison_pattern_similarity: float = 0.0
     misconception_correction_pattern_similarity: float = 0.0
+
+
+class EditorialComment(BaseModel):
+    """Pydantic mirror of the :class:`studio.models.EditorialComment` ORM row.
+
+    The Pydantic model is the canonical shape carried across the review
+    service boundary (route handlers, prompts, in-memory rewrite results);
+    the ORM row is the storage form. ``processed_in_revision`` is set by
+    :func:`studio.content.review.approve_draft` once the comments have
+    been folded into an :class:`ApprovedScript`.
+    """
+
+    id: str
+    draft_artifact_id: str
+    paragraph_id: str
+    start_offset: int
+    end_offset: int
+    kind: str
+    body: str
+    ai_action: Literal["rewrite", "note", "none"]
+    processed_in_revision: str | None = None
+    created_at: datetime
+
+
+class ApprovedScript(BaseModel):
+    """A frozen snapshot of accepted editorial text and its lineage.
+
+    ``editorial_text`` is the only approved copy of the script. Downstream
+    modules (speech, visuals, rendering) must consume this field as the
+    authoritative source. ``model_config = ConfigDict(frozen=True)`` makes
+    any post-approval mutation attempt raise ``ValidationError`` — defence
+    in depth against the spec rule that no downstream module may modify
+    the approved ``editorial_text``.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    payload_kind: Literal["approved_script"] = "approved_script"
+    id: str
+    draft_revision_id: str
+    editorial_text: str
+    structure: list[str]
+    fact_card_ids: list[str]
+    approved_at: datetime
 
 
 @register("narrative")
@@ -316,10 +370,19 @@ def _validate_pitches(payload: dict[str, Any]) -> dict[str, Any]:
     return StoryPitchSet.model_validate(payload).model_dump(mode="json")
 
 
+@register("approved_script")
+def _validate_approved_script(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate ``kind="approved_script"`` payloads as :class:`ApprovedScript`."""
+
+    return ApprovedScript.model_validate(payload).model_dump(mode="json")
+
+
 __all__ = [
     "AcceptedPitch",
+    "ApprovedScript",
     "DraftParagraph",
     "DraftRevision",
+    "EditorialComment",
     "FactCard",
     "FactRisk",
     "NarrativeBeat",
