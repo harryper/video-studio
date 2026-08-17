@@ -52,6 +52,26 @@ def test_immutability_blocks_payload_update(
         artifact.payload = {"pitches": [2]}
 
 
+def test_before_update_backstop_blocks_payload_at_flush(
+    repo: ArtifactRepository,
+    project: Project,
+    session,
+) -> None:
+    """The mapper-event backstop must trigger even when ``__setattr__`` is bypassed."""
+
+    artifact = repo.create(project.id, "story_pitch_set", {"pitches": [1]})
+    session.commit()
+    session.refresh(artifact)
+    assert artifact.payload == {"pitches": [1]}
+
+    # Bypass the Python ``__setattr__`` guard so the mapper event is the only
+    # line of defence left; ``session.flush()`` must raise.
+    object.__setattr__(artifact, "payload", {"pitches": [999]})
+
+    with pytest.raises(ImmutabilityError):
+        session.flush()
+
+
 def test_list_revisions_orders_newest_first(
     repo: ArtifactRepository, project: Project
 ) -> None:

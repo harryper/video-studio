@@ -32,7 +32,9 @@ def resolve_database_url(explicit: Optional[str] = None) -> str:
 
 
 def _is_in_memory(url: str) -> bool:
-    return ":memory:" in url
+    """True iff this is an in-memory SQLite URL (matched against the path)."""
+
+    return "/:memory:" in url or url.endswith(":memory:")
 
 
 def _attach_pragmas(engine: Engine) -> None:
