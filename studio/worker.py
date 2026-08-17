@@ -106,27 +106,18 @@ class StageDispatcher:
 
     # ------------------------------------------------------------------
     def _handle_claimed(self, claimed: ClaimedJob, now: datetime) -> None:
-        stage_value = claimed.stage
-        try:
-            stage = Stage(stage_value)
-        except ValueError:
-            self._queue.fail(
-                claimed.id,
-                claimed.token,
-                "unknown_stage",
-                f"stage {stage_value!r} is not registered",
-            )
-            return
-
-        handler = self._handlers.get(stage)
+        handler = self._handlers.get(claimed.stage)
         if handler is None:
-            # Unknown stage to this dispatcher — treat as a hard failure with
-            # a stable error code so the operator can spot the misconfiguration.
+            # No handler registered for this stage — treat as a hard failure
+            # with a stable error code so the operator can spot the
+            # misconfiguration. Covers both "stage is registered in the enum
+            # but this dispatcher lacks a handler" and "stage value from the
+            # DB is not a valid enum member".
             self._queue.fail(
                 claimed.id,
                 claimed.token,
                 "handler_missing",
-                f"no handler registered for stage {stage_value!r}",
+                f"no handler registered for stage {claimed.stage.value!r}",
             )
             return
 
@@ -134,7 +125,7 @@ class StageDispatcher:
         ctx = WorkerContext(
             job_id=claimed.id,
             project_id=claimed.project_id,
-            stage=stage,
+            stage=claimed.stage,
             input_artifact_ids=list(claimed.input_artifact_ids),
             now=now,
             db_session=session,

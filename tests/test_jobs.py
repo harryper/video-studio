@@ -387,15 +387,17 @@ def test_dispatcher_finishes_with_artifact_id_returned_by_handler(
     assert job.output_artifact_id == output.id
 
 
-def test_dispatcher_unknown_stage_marks_failed(
+def test_dispatcher_handler_error_marks_failed(
     queue: LeaseQueue,
     project: Project,
     session: Session,
     clock: FakeClock,
 ) -> None:
+    """A handler that raises is converted into a stable ``handler_error``."""
+
     queue.enqueue(project.id, Stage.SPEECH, [])
 
-    def boom(ctx: WorkerContext) -> list[str]:  # pragma: no cover - exercised below
+    def boom(ctx: WorkerContext) -> list[str]:
         raise RuntimeError("boom")
 
     dispatcher = _make_dispatcher(queue, {Stage.SPEECH: boom})
@@ -405,6 +407,27 @@ def test_dispatcher_unknown_stage_marks_failed(
     job = session.query(StageJob).filter(StageJob.status == "failed").one()
     assert job.error_code == "handler_error"
     assert "boom" in (job.error_message or "")
+
+
+def test_dispatcher_missing_handler_marks_failed(
+    queue: LeaseQueue,
+    project: Project,
+    session: Session,
+    clock: FakeClock,
+) -> None:
+    """A job for a stage that has no registered handler fails with ``handler_missing``."""
+
+    queue.enqueue(project.id, Stage.NARRATIVE, [])
+
+    # Dispatcher registers a handler for a DIFFERENT stage; the narrative job
+    # therefore has no handler available.
+    dispatcher = _make_dispatcher(queue, {Stage.DRAFT: lambda ctx: ["x"]})
+    processed = dispatcher.dispatch_once("worker-a", clock.now)
+    assert processed is True
+
+    job = session.query(StageJob).filter(StageJob.status == "failed").one()
+    assert job.error_code == "handler_missing"
+    assert "narrative" in (job.error_message or "")
 
 
 # ---------------------------------------------------------------------------

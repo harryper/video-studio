@@ -4,8 +4,9 @@ Every long-running pipeline stage (diagnosis, research, pitches, narrative,
 draft, rewrite, speech, approval) is enqueued as a ``StageJob`` and claimed by
 a worker process. The queue provides:
 
-* FIFO claim ordering with ``BEGIN IMMEDIATE`` semantics to make the
-  "claim next job" check-and-update atomic under SQLite.
+* FIFO claim ordering with optimistic-concurrency: the claim ``UPDATE`` is
+  guarded by ``WHERE status='queued'`` so two workers that both read the same
+  row cannot both succeed in turning it into ``running``.
 * Cryptographically random lease tokens so a finished job cannot be written by
   any worker other than the one that holds the lease.
 * Time-bounded leases (default 900 s) that ``recover_expired`` reaps back to
@@ -23,7 +24,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.exc import NoResultFound
 from sqlalchemy.orm import Session
 
@@ -58,13 +59,26 @@ class MaxAttemptsReached(Exception):
     """Raised when a job cannot be claimed because it has hit MAX_ATTEMPTS."""
 
 
+def _validate_lease(job: StageJob | None, job_id: str, token: str) -> None:
+    """Raise ``StaleLease`` with a precise reason when the lease is not held."""
+
+    if job is None:
+        raise StaleLease(f"job {job_id} not found")
+    if job.status != "running":
+        raise StaleLease(
+            f"job {job_id} is in status {job.status!r}; lease operations require running"
+        )
+    if job.lease_token != token:
+        raise StaleLease(f"job {job_id} lease_token mismatch")
+
+
 @dataclass(frozen=True)
 class ClaimedJob:
     """Lease handle returned to a worker that successfully claimed a job."""
 
     id: str
     project_id: str
-    stage: str
+    stage: Stage
     attempts: int
     token: str
     lease_expires_at: datetime
@@ -110,20 +124,21 @@ class LeaseQueue:
     def claim_next(self, worker_id: str, now: datetime) -> ClaimedJob | None:
         """Claim the oldest queued job not blocked by another running job.
 
-        SQLite upgrades a deferred transaction to a RESERVED lock on the first
-        write, which serialises concurrent claimers at the connection level
-        without us having to issue ``BEGIN IMMEDIATE`` explicitly (and
-        SQLAlchemy's session is already in an implicit transaction). The
-        unique constraint on ``(project_id, stage, ...)`` plus
-        ``ix_stage_jobs_status_lease`` keep FIFO ordering safe under WAL.
+        Concurrency safety is achieved with optimistic concurrency: the SELECT
+        finds the next claimable row, then an ``UPDATE`` guarded by
+        ``WHERE status='queued'`` flips it to ``running``. If two workers race
+        for the same row only one UPDATE succeeds (``rowcount == 1``); the
+        loser sees ``rowcount == 0`` and reports no claim. This is equivalent
+        to ``BEGIN IMMEDIATE`` for SQLite FIFO correctness without needing to
+        fight SQLAlchemy's implicit transaction.
         """
 
         token = secrets.token_urlsafe(32)
         new_expiry = now + timedelta(seconds=LEASE_SECONDS)
 
         try:
-            stmt = (
-                select(StageJob)
+            candidate_stmt = (
+                select(StageJob.id)
                 .where(StageJob.status == "queued")
                 .where(
                     StageJob.project_id.notin_(
@@ -133,28 +148,44 @@ class LeaseQueue:
                 .order_by(StageJob.created_at.asc(), StageJob.id.asc())
                 .limit(1)
             )
-            job = self._session.execute(stmt).scalar_one_or_none()
-            if job is None:
+            candidate_id = self._session.execute(candidate_stmt).scalar_one_or_none()
+            if candidate_id is None:
                 return None
 
-            job.status = "running"
-            job.lease_token = token
-            job.lease_expires_at = new_expiry
-            job.attempts = (job.attempts or 0) + 1
+            claim_stmt = (
+                update(StageJob)
+                .where(StageJob.id == candidate_id, StageJob.status == "queued")
+                .values(
+                    status="running",
+                    lease_token=token,
+                    lease_expires_at=new_expiry,
+                    attempts=StageJob.attempts + 1,
+                )
+            )
+            result = self._session.execute(claim_stmt)
+            if result.rowcount != 1:
+                # Lost the race to another worker. Roll back to drop the failed
+                # UPDATE; the caller may retry.
+                self._session.rollback()
+                return None
             self._session.commit()
 
+            # Re-read the freshly-claimed row so we return authoritative state
+            # (the UPDATE above mutated the row in-place but the session may
+            # have cached a stale snapshot before the write).
+            claimed = self._session.get(StageJob, candidate_id)
+            assert claimed is not None
+
             return ClaimedJob(
-                id=job.id,
-                project_id=job.project_id,
-                stage=job.stage,
-                attempts=job.attempts,
+                id=claimed.id,
+                project_id=claimed.project_id,
+                stage=Stage(claimed.stage),
+                attempts=claimed.attempts,
                 token=token,
                 lease_expires_at=new_expiry,
-                input_artifact_ids=list(job.input_artifact_ids or []),
+                input_artifact_ids=list(claimed.input_artifact_ids or []),
             )
         except Exception:
-            # Any failure inside the transaction must release the implicit
-            # transaction so the connection is reusable.
             try:
                 self._session.rollback()
             except Exception:  # pragma: no cover - rollback is best-effort
@@ -167,14 +198,8 @@ class LeaseQueue:
     def heartbeat(self, job_id: str, token: str, now: datetime) -> None:
         """Extend the lease by ``LEASE_SECONDS`` if the caller still owns it."""
 
-        stmt = select(StageJob).where(StageJob.id == job_id)
-        job = self._session.execute(stmt).scalar_one_or_none()
-        if (
-            job is None
-            or job.status != "running"
-            or job.lease_token != token
-        ):
-            raise StaleLease(f"job {job_id} is not owned by token {token!r}")
+        job = self._session.get(StageJob, job_id)
+        _validate_lease(job, job_id, token)
         job.lease_expires_at = now + timedelta(seconds=LEASE_SECONDS)
         self._session.commit()
 
@@ -189,14 +214,8 @@ class LeaseQueue:
     ) -> None:
         """Mark a leased job as finished and attach its output artifact."""
 
-        stmt = select(StageJob).where(StageJob.id == job_id)
-        job = self._session.execute(stmt).scalar_one_or_none()
-        if (
-            job is None
-            or job.status != "running"
-            or job.lease_token != token
-        ):
-            raise StaleLease(f"job {job_id} is not owned by token {token!r}")
+        job = self._session.get(StageJob, job_id)
+        _validate_lease(job, job_id, token)
         job.status = "finished"
         job.output_artifact_id = output_artifact_id
         job.lease_token = None
@@ -212,14 +231,8 @@ class LeaseQueue:
     ) -> None:
         """Mark a leased job as failed and clear its lease."""
 
-        stmt = select(StageJob).where(StageJob.id == job_id)
-        job = self._session.execute(stmt).scalar_one_or_none()
-        if (
-            job is None
-            or job.status != "running"
-            or job.lease_token != token
-        ):
-            raise StaleLease(f"job {job_id} is not owned by token {token!r}")
+        job = self._session.get(StageJob, job_id)
+        _validate_lease(job, job_id, token)
         job.status = "failed"
         job.error_code = code
         job.error_message = message
@@ -233,10 +246,9 @@ class LeaseQueue:
     def cancel(self, job_id: str) -> None:
         """Cancel a queued job. Running jobs must be failed, not cancelled."""
 
-        stmt = select(StageJob).where(StageJob.id == job_id)
-        job = self._session.execute(stmt).scalar_one_or_none()
+        job = self._session.get(StageJob, job_id)
         if job is None:
-            raise NoResultFound(f"job {job_id} not found")
+            raise JobNotClaimed(f"job {job_id} not found")
         if job.status != "queued":
             raise JobNotClaimed(
                 f"job {job_id} is in status {job.status!r}; only queued jobs can be cancelled"
