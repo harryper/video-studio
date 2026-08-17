@@ -150,8 +150,15 @@ class StoryPitch(BaseModel):
 
 
 class StoryPitchSet(BaseModel):
-    """A generation of pitches plus the revision lineage that produced it."""
+    """A generation of pitches plus the revision lineage that produced it.
 
+    ``payload_kind`` is the discriminator that tells :func:`validate_payload`
+    apart from :class:`AcceptedPitch` — both share ``kind="pitches"`` so the
+    head pointer tracks one stage, but downstream code must dispatch on a
+    named tag instead of guessing by key presence.
+    """
+
+    payload_kind: Literal["pitch_set"] = "pitch_set"
     id: str
     pitches: list[StoryPitch]
     parent_set_id: str | None = None
@@ -159,9 +166,19 @@ class StoryPitchSet(BaseModel):
     created_at: datetime
 
 
-class AcceptedPitch(BaseModel):
-    """The editor's choice: which pitch, plus any hand edits applied to it."""
+PitchPayloadKind = Literal["pitch_set", "accepted_pitch"]
 
+
+class AcceptedPitch(BaseModel):
+    """The editor's choice: which pitch, plus any hand edits applied to it.
+
+    ``payload_kind`` is the discriminator that tells :func:`validate_payload`
+    apart from :class:`StoryPitchSet` — both share ``kind="pitches"`` so the
+    head pointer tracks one stage, but downstream code must dispatch on a
+    named tag instead of guessing by key presence.
+    """
+
+    payload_kind: Literal["accepted_pitch"] = "accepted_pitch"
     selected_pitch_id: str
     edited_pitch: StoryPitch | None = None
 
@@ -171,11 +188,15 @@ def _validate_pitches(payload: dict[str, Any]) -> dict[str, Any]:
     """Validate both shapes stored under ``kind="pitches"``.
 
     A pitch artifact is either a generated set (``pitches`` present) or the
-    acceptance record that closes the human gate (``selected_pitch_id``).
-    They share a kind so the head pointer tracks a single stage.
+    acceptance record that closes the human gate (``payload_kind ==
+    "accepted_pitch"``). They share a kind so the head pointer tracks a
+    single stage. Discrimination is by the explicit ``payload_kind`` field;
+    key-presence dispatch is unreliable because both shapes could in theory
+    carry ``pitches`` keys under different schemas.
     """
 
-    if "selected_pitch_id" in payload:
+    kind = payload.get("payload_kind")
+    if kind == "accepted_pitch":
         return AcceptedPitch.model_validate(payload).model_dump(mode="json")
     return StoryPitchSet.model_validate(payload).model_dump(mode="json")
 
@@ -184,6 +205,7 @@ __all__ = [
     "AcceptedPitch",
     "FactCard",
     "FactRisk",
+    "PitchPayloadKind",
     "ResearchPacket",
     "SourceDocument",
     "StoryPitch",

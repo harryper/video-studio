@@ -106,6 +106,12 @@ def accept_pitch_route(
             detail="edited_pitch.id must match the pitch being accepted",
         )
 
+    # The accepted-pitch artifact (not the set artifact) is what Stage.NARRATIVE
+    # reads as its first input. Its payload is ``AcceptedPitch`` —
+    # ``selected_pitch_id`` plus an optional ``edited_pitch``. If
+    # ``edited_pitch`` is null the narrative handler walks ``parent_id`` back
+    # to the set artifact (``current_pitch_set`` finds the same set revision)
+    # and picks the pitch by ``selected_pitch_id``.
     artifact = accept_pitch(project_id, set_artifact.id, pitch_id, session, edited)
     job = LeaseQueue(session).enqueue(project_id, Stage.NARRATIVE, [artifact.id])
     session.commit()

@@ -122,6 +122,33 @@ def test_get_pitches_returns_current_set(
     assert [p["id"] for p in body["pitches"]] == [p.id for p in pitch_set.pitches]
 
 
+def test_pitch_artifacts_carry_payload_kind_discriminator(
+    client: TestClient,
+    session: Session,
+    project: Project,
+    pitch_set: StoryPitchSet,
+    seeded: dict[str, str],
+) -> None:
+    """Both shapes under ``kind="pitches"`` carry an explicit discriminator.
+
+    The set payload must say ``payload_kind="pitch_set"`` and the acceptance
+    record must say ``payload_kind="accepted_pitch"`` so downstream stages
+    (Task 7 narrative handler) can dispatch without guessing by key presence.
+    """
+
+    set_artifact_id = seeded["pitches"]
+    chosen = pitch_set.pitches[1]
+    response = client.post(f"/api/projects/{project.id}/pitches/{chosen.id}/accept")
+    assert response.status_code == 201
+
+    repo = ArtifactRepository(session)
+    session.expire_all()
+    set_artifact = repo.get(set_artifact_id)
+    accept_artifact = repo.get(response.json()["artifact_id"])
+    assert set_artifact.payload["payload_kind"] == "pitch_set"
+    assert accept_artifact.payload["payload_kind"] == "accepted_pitch"
+
+
 def test_get_pitches_404_when_absent(client: TestClient, project: Project) -> None:
     assert client.get(f"/api/projects/{project.id}/pitches").status_code == 404
 
@@ -150,7 +177,11 @@ def test_accept_writes_artifact_and_enqueues_narrative(
     artifact = repo.get(artifact_id)
     assert artifact is not None
     assert artifact.kind == "pitches"
-    assert artifact.payload == {"selected_pitch_id": chosen.id, "edited_pitch": None}
+    assert artifact.payload == {
+        "payload_kind": "accepted_pitch",
+        "selected_pitch_id": chosen.id,
+        "edited_pitch": None,
+    }
     # accept() moved the head pointer onto the new revision.
     assert repo.current(project.id, "pitches").id == artifact_id
 
