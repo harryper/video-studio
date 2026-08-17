@@ -183,6 +183,121 @@ class AcceptedPitch(BaseModel):
     edited_pitch: StoryPitch | None = None
 
 
+class NarrativeBeat(BaseModel):
+    """One planned paragraph / beat of a script.
+
+    ``id`` is a stable, service-assigned identifier so downstream revisions
+    (drafts, comments, rewrites) can anchor to a beat without depending on
+    array position. ``purpose`` distinguishes information beats from open
+    questions (``"question"``); non-question beats must cite at least one
+    :class:`FactCard` so the writer can never invent a fact the research
+    stage never produced.
+    """
+
+    id: str
+    purpose: str
+    fact_card_ids: list[str]
+    new_information: str
+    next_question: str
+    withheld_information: str
+
+
+class NarrativePlan(BaseModel):
+    """Ordered list of stable-id :class:`NarrativeBeat` for one script.
+
+    ``pitch_id`` ties the plan back to the :class:`StoryPitch` the editor
+    accepted, so the worker can refuse a plan whose pitch is no longer
+    current.
+    """
+
+    payload_kind: Literal["narrative_plan"] = "narrative_plan"
+    id: str
+    pitch_id: str
+    beats: list[NarrativeBeat]
+    created_at: datetime
+
+
+class DraftParagraph(BaseModel):
+    """One written paragraph keyed to the beat it corresponds to.
+
+    ``id`` MUST equal the id of the :class:`NarrativeBeat` it realises, so
+    editorial comments can anchor to a beat across plan revisions and the
+    speech stage can align subtitles to beats.
+    """
+
+    id: str
+    text: str
+
+
+class DraftRevision(BaseModel):
+    """A revision of the script's draft text.
+
+    ``narrative_plan_id`` ties the draft to the plan it was written from.
+    ``parent_id`` and ``change_source`` are designed for Task 8's
+    directive rewrite (``change_source="rewrite"``); an initial draft
+    always has ``parent_id=None`` and ``change_source="initial"``.
+    ``editorial_text`` is the joined paragraph text — it is the
+    canonical string that downstream stages (speech, approval) consume.
+    """
+
+    payload_kind: Literal["draft"] = "draft"
+    id: str
+    narrative_plan_id: str
+    paragraphs: list[DraftParagraph]
+    editorial_text: str
+    parent_id: str | None = None
+    change_source: str
+    author_note: str = ""
+    created_at: datetime
+
+
+class RepetitionReport(BaseModel):
+    """Result of comparing a draft's fingerprints against recent drafts.
+
+    ``must_replan`` is the only signal downstream stages act on — when
+    True, the worker must re-run narrative planning rather than patch the
+    existing draft (the brief forbids synonym-swap rewrites). The
+    ``*_similarity`` fields expose WHICH fingerprint crossed the
+    threshold so the worker / reviewer can see the shape that triggered
+    the replan.
+    """
+
+    must_replan: bool
+    rewrite_suggestions: list[str] = []
+    opening_syntax_similarity: float = 0.0
+    transition_distribution_similarity: float = 0.0
+    reveal_position_similarity: float = 0.0
+    ending_shape_similarity: float = 0.0
+    comparison_pattern_similarity: float = 0.0
+    misconception_correction_pattern_similarity: float = 0.0
+
+
+@register("narrative")
+def _validate_narrative(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate ``kind="narrative"`` payloads as :class:`NarrativePlan`."""
+
+    return NarrativePlan.model_validate(payload).model_dump(mode="json")
+
+
+@register("draft")
+def _validate_draft(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate ``kind="draft"`` payloads as :class:`DraftRevision`.
+
+    Strict validation is gated on the ``payload_kind="draft"``
+    discriminator so that DraftRevision-shaped payloads are normalised
+    through Pydantic (and any future schema fix lands on every read),
+    while legacy / placeholder payloads (e.g. ``{"text": "..."}`` used
+    by ``tests/test_jobs.py`` to exercise the artifact repository) pass
+    through untouched. The discriminator is set by :class:`DraftRevision`
+    itself, so any draft produced by :class:`~studio.content.writing.DraftService`
+    is always validated.
+    """
+
+    if payload.get("payload_kind") == "draft":
+        return DraftRevision.model_validate(payload).model_dump(mode="json")
+    return dict(payload)
+
+
 @register("pitches")
 def _validate_pitches(payload: dict[str, Any]) -> dict[str, Any]:
     """Validate both shapes stored under ``kind="pitches"``.
@@ -203,9 +318,14 @@ def _validate_pitches(payload: dict[str, Any]) -> dict[str, Any]:
 
 __all__ = [
     "AcceptedPitch",
+    "DraftParagraph",
+    "DraftRevision",
     "FactCard",
     "FactRisk",
+    "NarrativeBeat",
+    "NarrativePlan",
     "PitchPayloadKind",
+    "RepetitionReport",
     "ResearchPacket",
     "SourceDocument",
     "StoryPitch",
