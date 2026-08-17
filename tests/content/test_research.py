@@ -302,3 +302,32 @@ def test_softening_rewrites_absolute_to_qualified() -> None:
     assert card.verification_status == "softened"
     assert card.claim == softened
     assert "从不改变" not in card.claim
+
+
+def test_classifier_missed_fact_treated_as_unverified_payoff_critical() -> None:
+    """A candidate fact the classifier omits must trip finalize().
+
+    The classifier's silence cannot be trusted to mean "non-central" —
+    the same model that failed to classify the fact also failed to mark
+    it non-central. Promoting it to ``payoff_critical=True`` while
+    leaving ``verification_status="unverified"`` is the only way to
+    guarantee ``UnverifiedCentralClaim`` fires at finalize() rather
+    than silently shipping an unsupported central claim to the writer.
+    """
+
+    missed = "某条候选事实在分类阶段被模型完全遗漏"
+    packet = _build_packet(
+        candidate_facts=[missed],
+        high_risk_claims=[],
+        classifications_payload=[],  # classifier omits the fact entirely
+    )
+
+    assert len(packet.fact_cards) == 1
+    card = packet.fact_cards[0]
+    assert card.verification_status == "unverified"
+    assert card.payoff_critical is True
+    assert card.sources == []
+
+    service = ResearchService()
+    with pytest.raises(UnverifiedCentralClaim):
+        service.finalize(packet)

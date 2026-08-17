@@ -144,9 +144,19 @@ def _build_card(
     """Resolve a candidate claim into a :class:`FactCard` with status."""
 
     if profile is None:
-        # Classifier missed this fact — treat as unverified so finalize()
-        # rejects it when it's payoff-critical. The model lost focus;
-        # downstream stages are not allowed to trust the claim.
+        # Classifier missed this fact entirely. The expansion flagged it
+        # as a candidate, but we have no risk profile, no confidence, and
+        # no narrative value to attach. Two consequences:
+        #
+        # 1. ``verification_status="unverified"`` — finalize() will reject
+        #    the packet if the fact is payoff-critical.
+        # 2. ``payoff_critical=True`` — we cannot trust the classifier's
+        #    silence to mean "non-central". The model that failed to
+        #    classify this fact also failed to mark it non-central, so
+        #    downstream stages must assume the worst: this claim might
+        #    be the one the script's tension depends on. Forcing the
+        #    flag trips UnverifiedCentralClaim at finalize() rather than
+        #    silently shipping an unsupported central claim to the writer.
         return FactCard(
             claim=claim,
             narrative_value="",
@@ -154,7 +164,7 @@ def _build_card(
             risk="ordinary",
             sources=[],
             verification_status="unverified",
-            payoff_critical=False,
+            payoff_critical=True,
         )
 
     if profile.risk == "ordinary":
