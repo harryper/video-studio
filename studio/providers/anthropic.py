@@ -56,11 +56,12 @@ class AnthropicProvider(ModelProvider[BaseModel]):
         base_messages = [{"role": "user", "content": prompt}]
         base_metadata = {"operation": operation}
         first_text = self._invoke(system, base_messages, base_metadata)
-        parsed = self._parse(first_text, schema)
+        parsed, first_errors = self._parse(first_text, schema)
         if parsed is not None:
             return parsed
 
         repair_metadata = {**base_metadata, "mode": "schema_repair"}
+        error_summary = self._format_validation_errors(first_errors)
         repair_messages = base_messages + [
             {
                 "role": "user",
@@ -68,11 +69,12 @@ class AnthropicProvider(ModelProvider[BaseModel]):
                     "Your previous response did not satisfy the required "
                     "schema. Reply with ONLY a JSON object that matches the "
                     f"schema. Previous response: {first_text!r}"
+                    + (f"\nValidation errors: {error_summary}" if error_summary else "")
                 ),
             }
         ]
         second_text = self._invoke(system, repair_messages, repair_metadata)
-        parsed = self._parse(second_text, schema)
+        parsed, _ = self._parse(second_text, schema)
         if parsed is None:
             logger.error(
                 "anthropic schema repair failed for operation=%r", operation
@@ -120,17 +122,32 @@ class AnthropicProvider(ModelProvider[BaseModel]):
         return getattr(first, "text", str(first))
 
     @staticmethod
-    def _parse(text: str, schema: type[T]) -> T | None:
+    def _parse(
+        text: str, schema: type[T]
+    ) -> tuple[T | None, ValidationError | None]:
         try:
             data = json.loads(text)
         except (TypeError, ValueError):
-            return None
+            return None, None
         if not isinstance(data, dict):
-            return None
+            return None, None
         try:
-            return schema.model_validate(data)
-        except ValidationError:
-            return None
+            return schema.model_validate(data), None
+        except ValidationError as exc:
+            return None, exc
+
+    @staticmethod
+    def _format_validation_errors(errors: ValidationError | None) -> str:
+        if errors is None:
+            return ""
+        try:
+            items = errors.errors(include_url=False)
+        except Exception:  # pragma: no cover - defensive
+            return ""
+        return "; ".join(
+            ".".join(str(p) for p in err.get("loc", ())) + ": " + err.get("msg", "")
+            for err in items
+        )[:1024]
 
 
 __all__ = ["AnthropicProvider"]
