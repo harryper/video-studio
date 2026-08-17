@@ -132,11 +132,62 @@ class ResearchPacket(BaseModel):
     sources: list[SourceDocument]
 
 
+class StoryPitch(BaseModel):
+    """One of three competing story options presented to a human editor.
+
+    ``id`` is stable across regenerations: revising option 2 must not renumber
+    options 1 and 3, otherwise "accept option 1" would be ambiguous.
+    """
+
+    id: str
+    investigation_question: str
+    opening_scene: str
+    evidence_path: str
+    payoff: str
+    why_it_works: str
+    estimated_duration_sec: int
+    risks: list[str] = []
+
+
+class StoryPitchSet(BaseModel):
+    """A generation of pitches plus the revision lineage that produced it."""
+
+    id: str
+    pitches: list[StoryPitch]
+    parent_set_id: str | None = None
+    feedback: str | None = None
+    created_at: datetime
+
+
+class AcceptedPitch(BaseModel):
+    """The editor's choice: which pitch, plus any hand edits applied to it."""
+
+    selected_pitch_id: str
+    edited_pitch: StoryPitch | None = None
+
+
+@register("pitches")
+def _validate_pitches(payload: dict[str, Any]) -> dict[str, Any]:
+    """Validate both shapes stored under ``kind="pitches"``.
+
+    A pitch artifact is either a generated set (``pitches`` present) or the
+    acceptance record that closes the human gate (``selected_pitch_id``).
+    They share a kind so the head pointer tracks a single stage.
+    """
+
+    if "selected_pitch_id" in payload:
+        return AcceptedPitch.model_validate(payload).model_dump(mode="json")
+    return StoryPitchSet.model_validate(payload).model_dump(mode="json")
+
+
 __all__ = [
+    "AcceptedPitch",
     "FactCard",
     "FactRisk",
     "ResearchPacket",
     "SourceDocument",
+    "StoryPitch",
+    "StoryPitchSet",
     "TopicDiagnosis",
     "VerificationStatus",
     "register",
