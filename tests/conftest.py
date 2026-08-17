@@ -16,6 +16,8 @@ from studio import db as studio_db
 from studio.artifacts import ArtifactRepository
 from studio.config import Settings
 from studio.models import Base, Project
+from studio.providers.base import SearchProvider
+from studio.schemas import SourceDocument
 
 
 @pytest.fixture(autouse=True)
@@ -73,3 +75,30 @@ def project(session: Session) -> Project:
     session.commit()
     session.refresh(proj)
     return proj
+
+
+class FakeSearchProvider(SearchProvider):
+    """Hand-rolled stub — keyed by query string.
+
+    Each entry in ``canned`` is the list of :class:`SourceDocument`
+    instances the lookup returns. Queries not in ``canned`` return
+    ``[]`` to model a search provider that has nothing to say. Every
+    call is recorded on ``self.calls`` so assertions can verify the
+    research stage only called ``search()`` for the high-risk claims.
+
+    Lives in conftest.py so any test module can import it without
+    duplicating the wiring.
+    """
+
+    def __init__(self, canned: dict[str, list[SourceDocument]] | None = None) -> None:
+        self._canned: dict[str, list[SourceDocument]] = dict(canned or {})
+        self.calls: list[str] = []
+
+    def search(self, query: str, *, limit: int = 5) -> list[SourceDocument]:
+        self.calls.append(query)
+        return list(self._canned.get(query, []))
+
+
+@pytest.fixture
+def fake_search_provider() -> FakeSearchProvider:
+    return FakeSearchProvider()

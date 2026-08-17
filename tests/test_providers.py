@@ -43,11 +43,30 @@ from studio.schemas import SourceDocument, TopicDiagnosis
 # ---------------------------------------------------------------------------
 
 
+def _topic_diagnosis(core_question: str = "测试问题") -> TopicDiagnosis:
+    """Build a valid ``TopicDiagnosis`` with all six fields populated.
+
+    Task 5 extended ``TopicDiagnosis`` from a single ``core_question``
+    stub to the full diagnostic shape used by ``studio.content``.
+    Provider tests that pre-date Task 5 need a complete instance to
+    construct FakeModelProvider fixtures; this helper centralises the
+    boilerplate so the existing tests don't need to copy the other
+    five field values at every site.
+    """
+
+    return TopicDiagnosis(
+        core_question=core_question,
+        audience_prior_knowledge="普通观众",
+        central_tension="核心张力",
+        misconceptions=["常见误解"],
+        scope=["子主题 A"],
+        excluded_topics=["排除 A"],
+    )
+
+
 @pytest.fixture
 def fake_provider() -> FakeModelProvider:
-    return FakeModelProvider(
-        {"diagnosis": [TopicDiagnosis(core_question="测试问题")]}
-    )
+    return FakeModelProvider({"diagnosis": [_topic_diagnosis()]})
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +126,21 @@ def _message(text: str) -> _Message:
     return _Message(text)
 
 
+def _diagnosis_payload(core_question: str = "ok") -> str:
+    """Serialise a complete 6-field ``TopicDiagnosis`` payload."""
+
+    return json.dumps(
+        {
+            "core_question": core_question,
+            "audience_prior_knowledge": "普通观众",
+            "central_tension": "核心张力",
+            "misconceptions": ["常见误解"],
+            "scope": ["子主题 A"],
+            "excluded_topics": ["排除 A"],
+        }
+    )
+
+
 @pytest.fixture
 def broken_client() -> FakeAnthropic:
     """First response invalid JSON; second response valid JSON."""
@@ -114,7 +148,7 @@ def broken_client() -> FakeAnthropic:
     return FakeAnthropic(
         [
             _message("not json at all"),
-            _message(json.dumps({"core_question": "fixed"})),
+            _message(_diagnosis_payload("fixed")),
         ]
     )
 
@@ -169,8 +203,8 @@ def test_fake_provider_returns_independent_copies() -> None:
     provider = FakeModelProvider(
         {
             "diagnosis": [
-                TopicDiagnosis(core_question="first"),
-                TopicDiagnosis(core_question="first"),
+                _topic_diagnosis("first"),
+                _topic_diagnosis("first"),
             ]
         }
     )
@@ -191,8 +225,8 @@ def test_fake_provider_queues_can_be_appended() -> None:
     """The ``queue`` helper accepts additional fixtures between calls."""
 
     provider = FakeModelProvider()
-    provider.queue("diagnosis", TopicDiagnosis(core_question="first"))
-    provider.queue("diagnosis", TopicDiagnosis(core_question="second"))
+    provider.queue("diagnosis", _topic_diagnosis("first"))
+    provider.queue("diagnosis", _topic_diagnosis("second"))
     first = provider.generate(TopicDiagnosis, "s", "p", operation="diagnosis")
     second = provider.generate(TopicDiagnosis, "s", "p", operation="diagnosis")
     assert first.core_question == "first"
@@ -207,7 +241,7 @@ def test_fake_provider_queues_can_be_appended() -> None:
 def test_anthropic_provider_parses_valid_response_first_try() -> None:
     """A well-formed first response is parsed without invoking repair."""
 
-    client = FakeAnthropic([_message(json.dumps({"core_question": "ok"}))])
+    client = FakeAnthropic([_message(_diagnosis_payload("ok"))])
     provider = AnthropicProvider(client=client)
     result = provider.generate(
         TopicDiagnosis, "system", "prompt", operation="diagnosis"
@@ -291,7 +325,7 @@ def test_anthropic_provider_redacts_auth_in_errors(
 def test_anthropic_provider_passes_operation_in_metadata() -> None:
     """Every call records its ``operation`` so downstream tooling can correlate."""
 
-    client = FakeAnthropic([_message(json.dumps({"core_question": "ok"}))])
+    client = FakeAnthropic([_message(_diagnosis_payload("ok"))])
     provider = AnthropicProvider(client=client)
     provider.generate(TopicDiagnosis, "s", "p", operation="diagnosis")
     assert client.calls[0].metadata["operation"] == "diagnosis"
