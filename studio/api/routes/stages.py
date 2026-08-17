@@ -24,7 +24,13 @@ from studio.content.review import (
 )
 from studio.jobs import LeaseQueue, Stage
 from studio.providers.base import ModelProvider
-from studio.schemas import DraftRevision, EditorialComment, NarrativePlan, ResearchPacket, StoryPitch
+from studio.schemas import (
+    DraftRevision,
+    EditorialComment,
+    NarrativePlan,
+    ResearchPacket,
+    StoryPitch,
+)
 from studio.workflow import accept_pitch, current_pitch_set
 
 router = APIRouter(prefix="/api/projects", tags=["stages"])

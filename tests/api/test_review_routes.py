@@ -21,7 +21,8 @@ from sqlalchemy.orm import Session
 from studio.api.app import create_app
 from studio.api.routes.stages import set_default_provider
 from studio.artifacts import ArtifactRepository
-from studio.models import EditorialComment as OrmEditorialComment, Project
+from studio.models import EditorialComment as OrmEditorialComment
+from studio.models import Project
 from studio.providers.fake import FakeModelProvider
 from studio.schemas import (
     DraftParagraph,
