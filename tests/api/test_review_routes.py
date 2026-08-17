@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 from studio.api.app import create_app
 from studio.api.routes.stages import set_default_provider
 from studio.artifacts import ArtifactRepository
-from studio.models import EditorialComment as OrmEditorialComment
+from studio.models import EditorialComment as OrmEditorialComment, Project
 from studio.providers.fake import FakeModelProvider
 from studio.schemas import (
     DraftParagraph,
@@ -312,6 +312,71 @@ def test_rewrite_uses_stored_comments(
     assert response.status_code == 201
 
 
+def test_rewrite_prompt_includes_paragraph_fact_card_ids(
+    client: TestClient,
+    session: Session,
+    project,
+    seeded: dict[str, str],
+) -> None:
+    """The rewrite prompt surfaces each paragraph's fact_card_ids.
+
+    Without this the rewriter has no way to know which facts the
+    paragraph was supposed to ground itself in — a "rewrite but keep
+    the steel tariff figure" comment can't be honoured if the model
+    doesn't know which fact card carries that figure.
+    """
+
+    class _RecordingProvider(FakeModelProvider):
+        def __init__(self) -> None:
+            super().__init__()
+            self.prompts: list[str] = []
+
+        def generate(self, schema, system, prompt, *, operation):
+            self.prompts.append(prompt)
+            return super().generate(schema, system, prompt, operation=operation)
+
+    provider = _RecordingProvider()
+    provider.queue(
+        "rewrite",
+        _RewriteOutput(
+            paragraphs=[
+                _RewriteParagraph(
+                    paragraph_id="p2",
+                    text="重写后的第二段。",
+                )
+            ]
+        ),
+    )
+    set_default_provider(provider)
+    try:
+        client.post(
+            f"/api/projects/{project.id}/drafts/{seeded['draft']}/comments",
+            json={
+                "paragraph_id": "p2",
+                "start_offset": 0,
+                "end_offset": 0,
+                "kind": "comment",
+                "body": "改写",
+                "ai_action": "rewrite",
+            },
+        )
+        response = client.post(
+            f"/api/projects/{project.id}/drafts/{seeded['draft']}/rewrite"
+        )
+        assert response.status_code == 201
+    finally:
+        set_default_provider(None)
+
+    assert any("关联事实卡片" in p for p in provider.prompts), (
+        f"rewrite prompt must surface paragraph fact_card_ids; got: {provider.prompts}"
+    )
+    # The narrative plan in `seeded` lists fact_card_ids=["c1"] for both p1 and p2,
+    # so the rewritten p2 prompt must mention c1.
+    assert any("c1" in p for p in provider.prompts), (
+        f"rewrite prompt must include the c1 fact id; got: {provider.prompts}"
+    )
+
+
 def test_rewrite_404_for_unknown_draft(
     client: TestClient, project, rewrite_provider: FakeModelProvider
 ) -> None:
@@ -419,5 +484,30 @@ def test_approve_refuses_when_newer_draft_exists(
 def test_approve_404_for_unknown_draft(client: TestClient, project) -> None:
     response = client.post(
         f"/api/projects/{project.id}/drafts/no-such-id/approve"
+    )
+    assert response.status_code == 404
+
+
+def test_approve_404_for_cross_project_draft(
+    client: TestClient,
+    session: Session,
+    project,
+    rewrite_provider: FakeModelProvider,
+) -> None:
+    """A draft from another project returns 404, not 400 — same as the comments route."""
+
+    other = Project(id="proj-other", title="other")
+    session.add(other)
+    session.commit()
+    other_repo = ArtifactRepository(session)
+    other_draft = other_repo.create(
+        other.id,
+        "draft",
+        _draft().model_dump(mode="json"),
+    )
+    session.commit()
+
+    response = client.post(
+        f"/api/projects/{project.id}/drafts/{other_draft.id}/approve"
     )
     assert response.status_code == 404

@@ -140,6 +140,7 @@ class ReviewService:
         self,
         draft: DraftRevision,
         comments: list[EditorialComment],
+        paragraph_fact_card_ids: dict[str, list[str]] | None = None,
     ) -> DraftRevision:
         """Produce a new ``DraftRevision`` with ``parent_id=draft.id``.
 
@@ -165,7 +166,12 @@ class ReviewService:
 
         rewritten_texts: dict[str, str] = {}
         if rewrite_targets:
-            prompt = _rewrite_prompt(draft, rewrite_targets, by_paragraph)
+            prompt = _rewrite_prompt(
+                draft,
+                rewrite_targets,
+                by_paragraph,
+                paragraph_fact_card_ids or {},
+            )
             output = self._provider.generate(
                 _RewriteOutput, REWRITE_SYSTEM, prompt, operation="rewrite"
             )
@@ -225,6 +231,7 @@ def _rewrite_prompt(
     draft: DraftRevision,
     targets: list[DraftParagraph],
     comments_by_paragraph: dict[str, list[EditorialComment]],
+    paragraph_fact_card_ids: dict[str, list[str]],
 ) -> str:
     para_blocks: list[str] = []
     for para in targets:
@@ -238,12 +245,18 @@ def _rewrite_prompt(
                 comment_lines.append(
                     f"- [{comment.kind}] {comment.body}（保留原句：{original!r}）"
                 )
+        fact_card_ids = paragraph_fact_card_ids.get(para.id, [])
+        fact_card_line = (
+            f"关联事实卡片：{', '.join(fact_card_ids)}" if fact_card_ids else ""
+        )
         para_blocks.append(
             f"段落 {para.id}（当前文本：{para.text}）\n"
+            f"{fact_card_line}\n"
             f"批注：\n" + "\n".join(comment_lines)
         )
     return (
-        "请基于人类编辑的批注重写以下段落。被标记为「保留原句」的文字必须原封不动地保留在重写后的文本中。\n\n"
+        "请基于人类编辑的批注重写以下段落。被标记为「保留原句」的文字必须原封不动地保留在重写后的文本中；"
+        "改写时不要修改关联事实卡片里已验证的事实数字或表述。\n\n"
         f"draft_artifact_id：{draft.id}\n\n"
         "段落（顺序即输出顺序）：\n" + "\n\n".join(para_blocks) + "\n"
     )
@@ -354,9 +367,10 @@ def approve_draft(
     if draft is None:
         raise LookupError(f"artifact {draft_artifact_id!r} not found")
     if draft.project_id != project_id:
-        raise ValueError(
-            f"artifact {draft_artifact_id!r} belongs to project {draft.project_id!r}, "
-            f"not {project_id!r}"
+        # Cross-project is "not found from this project's view" — same
+        # status the comments route returns for the same condition.
+        raise LookupError(
+            f"artifact {draft_artifact_id!r} not found in project {project_id!r}"
         )
     if draft.kind != "draft":
         raise ValueError(

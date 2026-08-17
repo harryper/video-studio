@@ -24,7 +24,7 @@ from studio.content.review import (
 )
 from studio.jobs import LeaseQueue, Stage
 from studio.providers.base import ModelProvider
-from studio.schemas import DraftRevision, EditorialComment, ResearchPacket, StoryPitch
+from studio.schemas import DraftRevision, EditorialComment, NarrativePlan, ResearchPacket, StoryPitch
 from studio.workflow import accept_pitch, current_pitch_set
 
 router = APIRouter(prefix="/api/projects", tags=["stages"])
@@ -154,6 +154,32 @@ def _load_research(
     return ResearchPacket.model_validate(artifact.payload)
 
 
+def _load_paragraph_fact_card_ids(
+    session: Session, project_id: str, narrative_plan_id: str
+) -> dict[str, list[str]]:
+    """Map ``paragraph_id`` (== beat id) → list of fact-card ids.
+
+    The narrative plan's beats carry the ``fact_card_ids`` they cover.
+    Passing these to the rewrite prompt means a "rewrite but keep the
+    steel tariff figure" comment can be honoured by the model — without
+    this the rewriter has no way to know which facts the paragraph was
+    supposed to ground itself in. Returns ``{}`` when the plan is
+    missing; the rewriter treats that as "no fact constraints" rather
+    than failing.
+
+    ``narrative_plan_id`` is the content-level :class:`NarrativePlan.id`
+    (NOT an artifact id). Walk narrative revisions newest-first and
+    pick the first whose payload id matches.
+    """
+
+    repo = ArtifactRepository(session)
+    for artifact in repo.list_revisions(project_id, "narrative"):
+        plan = NarrativePlan.model_validate(artifact.payload)
+        if plan.id == narrative_plan_id:
+            return {beat.id: list(beat.fact_card_ids) for beat in plan.beats}
+    return {}
+
+
 @router.post("/{project_id}/drafts/{draft_artifact_id}/rewrite", status_code=201)
 def rewrite_route(
     project_id: str,
@@ -177,7 +203,12 @@ def rewrite_route(
     comments: list[EditorialComment] = list_comments(
         project_id, draft_artifact_id, session
     )
-    new_revision = ReviewService(provider, research).rewrite(draft, comments)
+    paragraph_fact_card_ids = _load_paragraph_fact_card_ids(
+        session, project_id, draft.narrative_plan_id
+    )
+    new_revision = ReviewService(provider, research).rewrite(
+        draft, comments, paragraph_fact_card_ids
+    )
     artifact = repo.create(
         project_id,
         "draft",
