@@ -159,6 +159,53 @@ def test_canned_phrase_is_reported_not_reworded() -> None:
     assert report.rewrite_suggestions == []
 
 
+def test_banned_phrase_at_opening_flags_opening_syntax() -> None:
+    """A banned phrase in the opening zone flags ``opening_syntax_similarity``.
+
+    The reviewer surfaces the *actual* fingerprint the banned phrase
+    corrupted, so the next rewrite knows what to focus on. A phrase that
+    appears in the first ``_OPENING_PREFIX_LEN`` characters must bump the
+    opening similarity field, not the ending or transition field.
+    """
+
+    text = "这就有意思了，海洋的盐度其实一直变化，" + "填充 " * 50
+    report = analyze_repetition(_draft_with_text(text), [])
+    assert report.must_replan is True
+    assert report.opening_syntax_similarity == 1.0
+    assert report.ending_shape_similarity == 0.0
+    assert report.transition_distribution_similarity == 0.0
+
+
+def test_banned_phrase_in_middle_flags_transition_distribution() -> None:
+    """A banned phrase in the mid-script zone flags transition distribution.
+
+    Mid-script is the transition region — banned phrasing there corrupts
+    the connective rhythm that ties beats together.
+    """
+
+    text = ("开头铺垫 " * 5) + "说白了，盐度在变，" + ("收尾 " * 50)
+    report = analyze_repetition(_draft_with_text(text), [])
+    assert report.must_replan is True
+    assert report.transition_distribution_similarity == 1.0
+    assert report.opening_syntax_similarity == 0.0
+    assert report.ending_shape_similarity == 0.0
+
+
+def test_banned_phrase_at_ending_flags_ending_shape() -> None:
+    """A banned phrase in the ending zone flags ``ending_shape_similarity``.
+
+    A closing canned phrase like "没了" corrupts the ending shape — the
+    surface that determines how the script bows out.
+    """
+
+    text = ("正文内容 " * 50) + "没了"
+    report = analyze_repetition(_draft_with_text(text), [])
+    assert report.must_replan is True
+    assert report.ending_shape_similarity == 1.0
+    assert report.opening_syntax_similarity == 0.0
+    assert report.transition_distribution_similarity == 0.0
+
+
 # ---------------------------------------------------------------------------
 # writing service
 # ---------------------------------------------------------------------------

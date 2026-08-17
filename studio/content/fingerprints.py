@@ -255,14 +255,30 @@ def analyze_repetition(
     banned_hit = any(phrase in text for phrase in _BANNED_PHRASES)
 
     if banned_hit:
-        # Single-draft signal: we don't have a similarity score, so
-        # report 1.0 for opening_syntax (the surface where the phrase
-        # appears) and 0.0 elsewhere. This also lets the reviewer see
-        # *which* fingerprint tripped the must_replan.
+        # Single-draft signal: a banned phrase is an intrinsic property
+        # of the draft, not a cross-draft comparison, so we don't have a
+        # similarity score. Classify each occurrence by where it lands
+        # in the script so the reviewer can see *which* fingerprint
+        # surface the banned phrase actually corrupted. If the same
+        # phrase appears in multiple zones we surface the first hit;
+        # re-runs after a rewrite are encouraged regardless.
+        first_index = min(
+            (text.index(phrase) for phrase in _BANNED_PHRASES if phrase in text),
+            default=0,
+        )
+        text_len = max(len(text), 1)
+        opening_zone = _OPENING_PREFIX_LEN
+        ending_zone = max(text_len - _ENDING_SUFFIX_LEN, opening_zone)
+        if first_index < opening_zone:
+            flagged = "opening_syntax_similarity"
+        elif first_index >= ending_zone:
+            flagged = "ending_shape_similarity"
+        else:
+            flagged = "transition_distribution_similarity"
         return RepetitionReport(
             must_replan=True,
             rewrite_suggestions=[],
-            opening_syntax_similarity=1.0,
+            **{flagged: 1.0},
         )
 
     current = compute_fingerprints(draft)
