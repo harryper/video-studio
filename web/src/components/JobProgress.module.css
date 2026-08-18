@@ -1,0 +1,61 @@
+.panel {
+  border: 1px solid var(--cs-border, #d4d4d8);
+  border-radius: 0.75rem;
+  padding: 1rem;
+  background: var(--cs-surface, #fff);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.status {
+  margin: 0;
+  font-size: 1rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  align-items: baseline;
+}
+
+.code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.95rem;
+  background: var(--cs-marker-bg, #e4e4e7);
+  padding: 0.1rem 0.4rem;
+  border-radius: 0.25rem;
+}
+
+.editorial {
+  color: var(--cs-text-muted, #71717a);
+}
+
+.meta {
+  margin: 0;
+  font-size: 0.8rem;
+  color: var(--cs-text-muted, #71717a);
+}
+
+.empty {
+  margin: 0;
+  color: var(--cs-text-muted, #71717a);
+}
+
+.error {
+  margin: 0;
+  color: var(--cs-danger, #b91c1c);
+}
+
+.message {
+  color: var(--cs-text-muted, #71717a);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.reconnect {
+  background: var(--cs-accent-soft, #eff6ff);
+  color: var(--cs-accent, #2563eb);
+}
