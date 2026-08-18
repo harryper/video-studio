@@ -15,6 +15,7 @@ from typing import Any
 
 from pydantic import BaseModel, ValidationError
 
+from studio.config import Settings
 from studio.providers.base import (
     ModelProvider,
     ModelProviderError,
@@ -44,6 +45,29 @@ class AnthropicProvider(ModelProvider[BaseModel]):
         self._client = client
         self._model = model
         self._max_tokens = max_tokens
+
+    @classmethod
+    def from_settings(cls, settings: Settings) -> AnthropicProvider:
+        """Construct a provider from the application ``Settings``.
+
+        Fails fast on a missing API key so the worker surfaces the misconfig
+        at startup. The key travels through to the Anthropic SDK via its
+        ``api_key`` kwarg; we never log it (``ModelProviderError`` carries the
+        redacted body via ``redact_body``).
+        """
+
+        api_key = (settings.anthropic_api_key or "").strip()
+        if not api_key:
+            raise ModelProviderError(
+                "ANTHROPIC_API_KEY is not configured (set STUDIO_ANTHROPIC_API_KEY "
+                "or pass Settings(anthropic_api_key=...))"
+            )
+        # Imported lazily so importing ``studio.providers`` does not require the
+        # ``anthropic`` SDK to be importable in the offline test environment.
+        from anthropic import Anthropic as AnthropicClient
+
+        client = AnthropicClient(api_key=api_key)
+        return cls(client)
 
     def generate(
         self,

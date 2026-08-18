@@ -26,6 +26,12 @@ class Settings(BaseSettings):
     # STUDIO_PRODUCTION — when True, session cookies are marked ``Secure``.
     production: bool = False
 
+    # STUDIO_ANTHROPIC_API_KEY — required for live Anthropic calls. The worker
+    # fail-fasts at startup when this is empty so a misconfigured deploy shows
+    # the error in the systemd journal rather than burning the lease window
+    # on every queued job.
+    anthropic_api_key: str = ""
+
     # SSE handler tunables (test-only overrides shorten poll + heartbeat).
     sse_poll_interval_ms: int = 500
     sse_heartbeat_ms: int = 15_000

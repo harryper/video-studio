@@ -331,6 +331,39 @@ def test_anthropic_provider_passes_operation_in_metadata() -> None:
     assert client.calls[0].metadata["operation"] == "diagnosis"
 
 
+def test_from_settings_raises_when_api_key_missing() -> None:
+    """``from_settings()`` fail-fasts so the operator sees the misconfig at startup.
+
+    A worker that only fails on the first dispatched job would otherwise burn
+    the lease window on every queued job before the operator noticed.
+    """
+
+    settings = Settings(anthropic_api_key="")
+    with pytest.raises(ModelProviderError, match="ANTHROPIC_API_KEY"):
+        AnthropicProvider.from_settings(settings)
+
+
+def test_from_settings_reads_anthropic_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``from_settings()`` reads ``STUDIO_ANTHROPIC_API_KEY`` via the Settings field."""
+
+    monkeypatch.setenv("STUDIO_ANTHROPIC_API_KEY", "sk-test-from-settings")
+    settings = Settings()
+    provider = AnthropicProvider.from_settings(settings)
+    # The constructed Anthropic client stores its key as ``api_key``; that's
+    # the same surface the official SDK exposes, so a hand-rolled FakeAnthropic
+    # that captures the kwarg can verify the wiring without a live API call.
+    assert getattr(provider._client, "api_key", None) == "sk-test-from-settings"
+    assert provider._model
+
+
+def test_from_settings_honours_explicit_settings_override() -> None:
+    """Passing a populated ``Settings`` overrides any ``STUDIO_*`` env var."""
+
+    settings = Settings(anthropic_api_key="sk-explicit")
+    provider = AnthropicProvider.from_settings(settings)
+    assert getattr(provider._client, "api_key", None) == "sk-explicit"
+
+
 # ===========================================================================
 # HttpSearchProvider
 # ===========================================================================

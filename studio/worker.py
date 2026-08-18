@@ -77,16 +77,16 @@ class StageDispatcher:
     def run(
         self,
         worker_id: str,
-        heartbeats: list[tuple[ClaimedJob, datetime]],
         shutdown_event: threading.Event,
         tick_seconds: float = 2.0,
     ) -> Iterator[bool]:
         """Yield one True/False per dispatched job until ``shutdown_event`` is set.
 
-        ``heartbeats`` is a mutable buffer the worker loop writes to; callers
-        that want heartbeats to fire (the long-running worker process in
-        Task 14) just keep a reference and schedule a periodic extender thread
-        against the latest entry. Tests can pass ``[]`` to disable heartbeats.
+        The current stages complete synchronously inside
+        :meth:`dispatch_once`, so the 900 s lease window comfortably covers a
+        single stage. A future stage that exceeds that budget can either lower
+        ``tick_seconds`` or wire a separate heartbeat extender; this loop
+        intentionally does not carry a heartbeat buffer.
         """
 
         while not shutdown_event.is_set():

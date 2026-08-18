@@ -24,14 +24,6 @@ The entrypoint refuses to start when ``STUDIO_DATABASE_URL`` /
 database would silently absorb jobs it has no operator to recover from.
 The check is cheap (a single ``Settings()`` instantiation) and surfaces a
 clear error before any lease claim happens.
-
-NOTE: :class:`~studio.worker.StageDispatcher.run` accepts a ``heartbeats``
-buffer that the brief documents for long-running lease extension. The
-current implementation handles each stage synchronously inside
-:meth:`~studio.worker.StageDispatcher.dispatch_once`, so the lease window
-(``studio.jobs.LEASE_SECONDS`` = 900 s) comfortably covers a single stage.
-Future stages that exceed that budget can wire the heartbeat callback
-without touching this entrypoint.
 """
 
 from __future__ import annotations
@@ -73,15 +65,7 @@ def _build_provider(settings: Settings) -> tuple[Any, HttpSearchProvider | None]
     less actionable ``ModelProviderError``.
     """
 
-    try:
-        model = AnthropicProvider.from_settings(settings)
-    except AttributeError:
-        # The Anthropic adapter (Tasks 1–13) does not yet expose a
-        # ``from_settings`` helper; fall back to constructing the client
-        # directly so the entrypoint does not block the deploy.
-        from anthropic import Anthropic as AnthropicClient
-
-        model = AnthropicProvider(AnthropicClient())
+    model = AnthropicProvider.from_settings(settings)
     search = (
         HttpSearchProvider(settings) if settings.search_provider_url else None
     )
@@ -130,12 +114,8 @@ def main(argv: list[str] | None = None) -> int:
     signal.signal(signal.SIGINT, lambda *_: shutdown.set())
 
     logger.info("content-studio worker starting: worker_id=%s", worker_id)
-    # ``heartbeats=[]`` disables the optional heartbeat buffer that the
-    # dispatcher keeps for future long-running stages. The current stages
-    # complete inside one dispatch cycle so a heartbeat is unnecessary.
     for _ in dispatcher.run(
         worker_id=worker_id,
-        heartbeats=[],
         shutdown_event=shutdown,
     ):
         if shutdown.is_set():
