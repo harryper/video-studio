@@ -26,6 +26,26 @@ from studio.providers.base import (
 logger = logging.getLogger(__name__)
 
 
+def _strip_code_fence(text: str) -> str:
+    """Strip a leading ```` ```json ```` / ```` ``` ```` fence and matching closer.
+
+    Returns ``text`` unchanged when no fence is present. Handles models that
+    include the ``json`` language hint and models that omit it.
+    """
+
+    stripped = text.strip()
+    if not stripped.startswith("```"):
+        return text
+    lines = stripped.split("\n")
+    # Drop the opening fence line (``` or ```json)
+    if lines and lines[0].lstrip().startswith("```"):
+        lines = lines[1:]
+    # Drop the closing fence line if present
+    if lines and lines[-1].strip().startswith("```"):
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
+
 class AnthropicProvider(ModelProvider[BaseModel]):
     """Adapter around an ``anthropic.Anthropic``-shaped client.
 
@@ -149,8 +169,13 @@ class AnthropicProvider(ModelProvider[BaseModel]):
     def _parse(
         text: str, schema: type[T]
     ) -> tuple[T | None, ValidationError | None]:
+        # Live Anthropic responses commonly wrap JSON in ```` ```json … ``` ````
+        # code fences; the offline fixture path didn't exercise that wrapper,
+        # so every online call would otherwise fall through to repair and still
+        # fail. Strip the fence before parsing.
+        body = _strip_code_fence(text)
         try:
-            data = json.loads(text)
+            data = json.loads(body)
         except (TypeError, ValueError):
             return None, None
         if not isinstance(data, dict):

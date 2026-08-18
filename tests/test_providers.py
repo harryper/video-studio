@@ -251,6 +251,36 @@ def test_anthropic_provider_parses_valid_response_first_try() -> None:
     assert client.call_count == 1
 
 
+def test_anthropic_provider_strips_markdown_code_fences() -> None:
+    """Live Anthropic responses wrap JSON in ``\\`\\`\\`json … \\`\\`\\```.
+
+    The parser must accept that wrapper or every online call will fall through
+    to repair and still fail.
+    """
+
+    wrapped = "```json\n" + _diagnosis_payload("ok") + "\n```"
+    client = FakeAnthropic([_message(wrapped)])
+    provider = AnthropicProvider(client=client)
+    result = provider.generate(
+        TopicDiagnosis, "system", "prompt", operation="diagnosis"
+    )
+    assert result.core_question == "ok"
+    assert client.call_count == 1
+
+
+def test_anthropic_provider_strips_code_fences_without_language_hint() -> None:
+    """Some models omit the ``json`` language hint; the wrapper must still strip."""
+
+    wrapped = "```\n" + _diagnosis_payload("ok") + "\n```"
+    client = FakeAnthropic([_message(wrapped)])
+    provider = AnthropicProvider(client=client)
+    result = provider.generate(
+        TopicDiagnosis, "system", "prompt", operation="diagnosis"
+    )
+    assert result.core_question == "ok"
+    assert client.call_count == 1
+
+
 def test_provider_repairs_format_only_once(
     broken_client: FakeAnthropic,
 ) -> None:
