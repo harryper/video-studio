@@ -121,6 +121,11 @@ class ResearchPacket(BaseModel):
     * ``visual_details`` — textures, angles, colors.
     * ``uncertainties`` — open questions the script must not claim.
     * ``sources`` — flat list of every cited :class:`SourceDocument`.
+    * ``search_attempted`` — whether the search provider was wired in
+      when this packet was built. ``finalize`` uses this flag to
+      distinguish "search ran and failed" from "no search was ever
+      attempted" (single-user dev box, offline evaluation). Defaults
+      to ``True`` so historical packets deserialise unchanged.
     """
 
     mechanisms: list[str]
@@ -130,6 +135,7 @@ class ResearchPacket(BaseModel):
     visual_details: list[str]
     uncertainties: list[str]
     sources: list[SourceDocument]
+    search_attempted: bool = True
 
 
 class StoryPitch(BaseModel):

@@ -145,6 +145,8 @@ def build_research_packet(
         collected_sources.extend(card.sources)
 
     # The packet's top-level ``sources`` is the flat, deduped roll-up.
+    # ``search_attempted`` propagates whether a provider was wired in so
+    # ``finalize`` can tell "search failed" apart from "no search".
     return ResearchPacket(
         mechanisms=list(expansion.mechanisms),
         fact_cards=fact_cards,
@@ -153,6 +155,7 @@ def build_research_packet(
         visual_details=list(expansion.visual_details),
         uncertainties=list(expansion.uncertainties),
         sources=_dedupe_sources(collected_sources),
+        search_attempted=search is not None,
     )
 
 
@@ -318,8 +321,22 @@ class ResearchService:
         The check is intentionally narrow: it walks ``fact_cards`` once
         and raises as soon as it finds an unsupported card whose
         absence would break the script's promised tension.
+
+        When the packet was built without a search provider (``search_attempted``
+        is ``False``) every high-risk claim will be ``unverified`` simply
+        because no verification was attempted. The guard would then
+        always fire in dev / single-user setups, blocking the pipeline
+        from producing any draft. Skip the raise and warn instead so
+        the operator sees the gap but downstream stages can still run.
         """
 
+        if not packet.search_attempted:
+            logger.warning(
+                "research.finalize skipping UnverifiedCentralClaim check: "
+                "search_attempted=False; high-risk claims are unverified "
+                "by construction"
+            )
+            return
         for card in packet.fact_cards:
             if card.payoff_critical and card.verification_status == "unverified":
                 raise UnverifiedCentralClaim(

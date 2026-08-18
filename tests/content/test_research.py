@@ -182,6 +182,7 @@ def test_unverified_central_claim_is_rejected(
         visual_details=[],
         uncertainties=["盐度历史变化"],
         sources=[],
+        search_attempted=True,
     )
     with pytest.raises(UnverifiedCentralClaim):
         service.finalize(payload_packet)
@@ -377,3 +378,71 @@ def test_research_skips_search_when_provider_is_none() -> None:
     numeric_card = next(c for c in packet.fact_cards if c.claim == numeric)
     assert numeric_card.sources == []
     assert numeric_card.verification_status in {"unverified", "softened", "dropped"}
+
+
+def test_research_packet_marks_search_attempted_false_when_search_none() -> None:
+    """When no search provider was wired in, ``search_attempted`` must be False.
+
+    The packet's own metadata tells :meth:`ResearchService.finalize` that
+    it cannot have produced verified claims, so the
+    :class:`UnverifiedCentralClaim` guard should be relaxed.
+    """
+
+    numeric = "海洋平均盐度 35‰"
+    expansion = _ExpansionDraft(
+        candidate_facts=[numeric],
+        high_risk_claims=[numeric],
+        mechanisms=["m"],
+        people_events=[],
+        concrete_scenes=[],
+        visual_details=[],
+        uncertainties=[],
+    )
+    classification = _make_classification_draft(
+        [
+            {
+                "claim": numeric,
+                "risk": "number",
+                "confidence": 0.9,
+                "narrative_value": "关键数字",
+            }
+        ]
+    )
+    model = FakeModelProvider({"research": [expansion, classification]})
+    packet = build_research_packet(_diagnosis(), model, None)
+    assert packet.search_attempted is False
+
+
+def test_finalize_skips_unverified_when_search_not_attempted(
+    service: ResearchService,
+) -> None:
+    """``UnverifiedCentralClaim`` is a *search* failure, not a dev-mode failure.
+
+    If the packet's ``search_attempted`` flag is False (the single-user
+    dev box ran research without a configured ``STUDIO_SEARCH_PROVIDER_URL``),
+    ``finalize`` should log a warning and let the pipeline continue so
+    downstream stages can produce a draft for the operator to inspect.
+    """
+
+    payload_packet = ResearchPacket(
+        mechanisms=["m"],
+        fact_cards=[
+            FactCard(
+                claim="西瓜含糖 6-7%",
+                narrative_value="反直觉",
+                confidence=0.7,
+                risk="number",
+                verification_status="unverified",
+                sources=[],
+                payoff_critical=True,
+            )
+        ],
+        people_events=[],
+        concrete_scenes=[],
+        visual_details=[],
+        uncertainties=[],
+        sources=[],
+        search_attempted=False,
+    )
+    # Must NOT raise.
+    service.finalize(payload_packet)
