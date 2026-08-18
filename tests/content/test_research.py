@@ -331,3 +331,49 @@ def test_classifier_missed_fact_treated_as_unverified_payoff_critical() -> None:
     service = ResearchService()
     with pytest.raises(UnverifiedCentralClaim):
         service.finalize(packet)
+
+
+def test_research_skips_search_when_provider_is_none() -> None:
+    """When no search provider is configured the builder must not crash.
+
+    The offline / single-user dev box has no ``STUDIO_SEARCH_PROVIDER_URL``;
+    before this fix the worker logged a warning and then died with
+    ``AttributeError: 'NoneType' object has no attribute 'search'`` the
+    first time research ran. Now the builder logs once, leaves the
+    source list empty, and lets the classifier mark claims unverified.
+    """
+
+    numeric = "海洋平均盐度 35‰"
+    ordinary = "海水喝起来是咸的"
+    expansion = _ExpansionDraft(
+        candidate_facts=[numeric, ordinary],
+        high_risk_claims=[numeric],
+        mechanisms=["m"],
+        people_events=[],
+        concrete_scenes=[],
+        visual_details=[],
+        uncertainties=[],
+    )
+    classification = _make_classification_draft(
+        [
+            {
+                "claim": numeric,
+                "risk": "number",
+                "confidence": 0.9,
+                "narrative_value": "关键数字",
+            },
+            {
+                "claim": ordinary,
+                "risk": "ordinary",
+                "confidence": 0.95,
+                "narrative_value": "日常感知",
+            },
+        ]
+    )
+    model = FakeModelProvider({"research": [expansion, classification]})
+    # No FakeSearchProvider — simulate ``hctx.search is None``.
+    packet = build_research_packet(_diagnosis(), model, None)
+
+    numeric_card = next(c for c in packet.fact_cards if c.claim == numeric)
+    assert numeric_card.sources == []
+    assert numeric_card.verification_status in {"unverified", "softened", "dropped"}

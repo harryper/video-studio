@@ -32,6 +32,7 @@ Verification hierarchy:
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 from typing import Literal
 
@@ -39,6 +40,8 @@ from pydantic import BaseModel
 
 from studio.providers.base import ModelProvider, SearchProvider
 from studio.schemas import FactCard, ResearchPacket, SourceDocument, TopicDiagnosis
+
+logger = logging.getLogger(__name__)
 
 
 class UnverifiedCentralClaim(Exception):
@@ -83,13 +86,21 @@ class _ClassificationDraft(BaseModel):
 def build_research_packet(
     diagnosis: TopicDiagnosis,
     model: ModelProvider,
-    search: SearchProvider,
+    search: SearchProvider | None,
 ) -> ResearchPacket:
     """Build a :class:`ResearchPacket` from a :class:`TopicDiagnosis`.
 
     Two model calls in order, both keyed on ``operation="research"``.
     Searches run between the two calls so the per-fact risk profile is
     applied to claims that already have sources attached.
+
+    ``search`` may be ``None`` when no ``STUDIO_SEARCH_PROVIDER_URL`` is
+    configured (single-user dev box, offline evaluation). The builder
+    logs a warning, leaves the per-claim source list empty, and lets
+    the classifier mark claims ``unverified``. Downstream ``finalize()``
+    will then raise :class:`UnverifiedCentralClaim` for any
+    ``payoff_critical`` fact — a clearer failure than ``AttributeError``
+    from a missing provider.
     """
 
     expansion = model.generate(
@@ -101,9 +112,18 @@ def build_research_packet(
 
     # Search every high-risk claim exactly once. Capped at ``limit=3``
     # per the brief so a single rich claim can't drown the source list.
+    # When no search provider is wired in, fall through with empty
+    # source lists so the classifier can still mark claims ``unverified``
+    # instead of crashing the worker.
     sources_by_claim: dict[str, list[SourceDocument]] = {}
-    for claim in expansion.high_risk_claims:
-        sources_by_claim[claim] = list(search.search(claim, limit=3))
+    if search is None:
+        logger.warning(
+            "research stage running without a search provider; "
+            "high-risk claims will be flagged as unverified"
+        )
+    else:
+        for claim in expansion.high_risk_claims:
+            sources_by_claim[claim] = list(search.search(claim, limit=3))
 
     classification = model.generate(
         _ClassificationDraft,
