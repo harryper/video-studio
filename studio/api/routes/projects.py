@@ -38,6 +38,9 @@ router = APIRouter(prefix="/api/projects", tags=["projects"])
 
 
 class CreateProjectRequest(BaseModel):
+    # Both fields are required: ``Project.title`` is NOT NULL at the DB
+    # layer (the brief's pseudo-API ``{"topic": "台风"}`` is illustrative
+    # shorthand for the request shape, not the actual contract).
     title: str
     topic: str
 
@@ -91,7 +94,14 @@ def _project_summary(session: Session, project: Project) -> dict[str, Any]:
 
 
 def _downstream_kinds(session: Session, project_id: str) -> list[str]:
-    """Kinds whose head exists for ``project_id`` and are downstream of pitch."""
+    """Kinds whose head exists for ``project_id`` and are downstream of pitch.
+
+    The data-model kind for the narrative plan is ``"narrative"`` (the
+    ``ArtifactRepository`` registry and the ``@register("narrative")``
+    schema validator both use that name). The brief's pseudo-API uses
+    ``"narrative_plan"``; the implementation keeps the established data
+    model so callers and validators stay aligned.
+    """
 
     stmt = (
         select(ProjectArtifactHead.kind)

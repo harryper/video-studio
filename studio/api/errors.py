@@ -1,4 +1,4 @@
-"""Stable ``{code, message, details}`` error envelope for Content Studio.
+"""Stable ``{code, message, ...}`` error envelope for Content Studio.
 
 Routes raise ``ApiError`` (or FastAPI's ``HTTPException``) and the handlers
 registered by :func:`register_error_handlers` translate both into the same
@@ -9,8 +9,12 @@ The shape mirrors the contract pinned in Task 10:
 
 * ``code`` — stable machine identifier (e.g. ``confirmation_required``).
 * ``message`` — human-readable explanation.
-* ``details`` — optional object with extra fields the client may need
-  (currently only ``invalidates`` for the reopen handshake).
+* ``details`` keys are flattened into the top level (alongside ``code``
+  and ``message``) rather than nested under a ``details`` object. The
+  brief's verbatim test reads ``response.json()["invalidates"]`` directly,
+  so the canonical contract is the flat shape. Callers that want all
+  extras under a single key can still destructure ``code``/``message``
+  out and treat the rest as the details payload.
 
 ``HTTPException.detail`` is reused as the response ``message`` so that
 existing call sites that raise ``HTTPException`` keep working without

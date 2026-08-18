@@ -119,7 +119,13 @@ def login(
     response: Response,
     settings: Settings = Depends(get_settings),
 ) -> dict[str, str]:
-    """Mint a session cookie on password match; returns CSRF token in body."""
+    """Mint a session cookie on password match; returns CSRF token in body.
+
+    Status defaults to 200 (not 204) because the CSRF token must travel back
+    to the SPA in the response body — the cookie itself is HttpOnly and the
+    SPA cannot read it. A 204 with a body is a 200 in disguise, so the
+    canonical contract is 200 + JSON.
+    """
 
     if not check_password(settings, body.password):
         raise HTTPException(status_code=401, detail="invalid credentials")
