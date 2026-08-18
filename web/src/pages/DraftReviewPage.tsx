@@ -43,6 +43,7 @@ import { errorMessage } from "../components/errorMessage";
 import { ParagraphEditor } from "../components/ParagraphEditor";
 import { RevisionDiff } from "../components/RevisionDiff";
 import { Link } from "../router";
+import { useMediaQuery } from "../useMediaQuery";
 
 import styles from "./DraftReviewPage.module.css";
 
@@ -82,6 +83,8 @@ export function DraftReviewPage({
   const [reopenInvalidates, setReopenInvalidates] = useState<string[] | null>(null);
   const [activeTab, setActiveTab] = useState<MobileTab>("text");
   const [busy, setBusy] = useState<boolean>(false);
+
+  const isMobile = useMediaQuery(forceMobile);
 
   const refresh = useCallback(async (): Promise<void> => {
     setError(null);
@@ -181,10 +184,13 @@ export function DraftReviewPage({
     setBusy(true);
     setError(null);
     try {
-      // The backend already produced the artifact when we triggered the
-      // rewrite — "accept" here is a UI acknowledgement that the diff
-      // view was reviewed. Refresh comments / artifacts so any follow-up
-      // view shows the new draft head.
+      // triggerRewrite already created the new draft artifact (revision
+      // bumped + parent_id set) — "采用此版本" here is a UI
+      // acknowledgement that the diff was reviewed. We intentionally
+      // do NOT call approveDraft; that endpoint produces a separate
+      // approved_script artifact (spec §10.6) and is exposed via a
+      // dedicated "定稿本版本" button elsewhere. Refresh so any
+      // follow-up view shows the new head.
       setAcceptedNotice(true);
       setDiffCandidate(null);
       await refresh();
@@ -260,7 +266,7 @@ export function DraftReviewPage({
   const cursorParagraphId =
     aiLabeledComments[aiLabeledComments.length - 1]?.paragraph_id ?? null;
 
-  const layoutClass = forceMobile ? styles.mobile : styles.desktop;
+  const layoutClass = isMobile ? styles.mobile : styles.desktop;
 
   return (
     <main className={styles.page}>
@@ -375,7 +381,7 @@ export function DraftReviewPage({
         </section>
       </div>
 
-      {forceMobile ? (
+      {isMobile ? (
         <nav className={styles.tabBar} role="tablist" aria-label="稿件视图">
           {(["roadmap", "text", "comments"] as MobileTab[]).map((tab) => (
             <button

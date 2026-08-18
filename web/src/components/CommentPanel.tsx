@@ -1,16 +1,23 @@
 /**
  * CommentPanel — list editorial comments grouped by paragraph, plus
- * the "preview rewrite" controls (spec §10.4 right column).
+ * the rewrite controls (spec §10.4 right column).
+ *
+ * Spec §10.4 mandates a TWO-STEP rewrite flow:
+ *   1. "预览本轮修改" only reveals the scope (which paragraphs will be
+ *      modified, which won't). No backend call.
+ *   2. "确认改写" actually invokes the model via onPreviewRewrite, which
+ *      the parent page wires to triggerRewrite.
  *
  * The panel renders:
  *   * 每条批注 with a small action badge (rewrite → AI / note → 人类)
  *   * a paragraph-grouped list keyed off ``paragraph_id``
- *   * a "预览本轮修改" / "改写全部已选段" trigger that calls
+ *   * the scope preview (gated behind the "预览本轮修改" button)
+ *   * the "确认改写" button that calls
  *     ``onPreviewRewrite(rewriteTargets, untouched)`` so the parent can
  *     render the RevisionDiff view.
  */
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import type { EditorialComment } from "../api/types";
 import { QualityPanel } from "./QualityPanel";
@@ -44,6 +51,8 @@ export function CommentPanel({
   onPreviewRewrite,
   onReopenConfirm,
 }: CommentPanelProps): React.ReactElement {
+  const [scopeVisible, setScopeVisible] = useState<boolean>(false);
+
   const grouped = useMemo(() => {
     const map = new Map<string, EditorialComment[]>();
     for (const comment of comments) {
@@ -76,7 +85,9 @@ export function CommentPanel({
     [allParagraphIds, rewriteParagraphs],
   );
 
-  const targetsLabel = targets.length > 0
+  const hasTargets = targets.length > 0;
+
+  const targetsLabel = hasTargets
     ? `将修改：${joinParagraphs(targets)}`
     : "将修改：暂无";
   const untouchedLabel =
@@ -84,7 +95,11 @@ export function CommentPanel({
       ? `不会修改：${joinParagraphs(untouched)}`
       : "不会修改：全部段落都会被改写";
 
-  const triggerPreview = (): void => {
+  const handlePreview = (): void => {
+    setScopeVisible(true);
+  };
+
+  const handleConfirm = (): void => {
     onPreviewRewrite(targets, untouched);
   };
 
@@ -139,15 +154,32 @@ export function CommentPanel({
 
       <section>
         <h2 className={styles.heading}>本轮改写预览</h2>
-        <p className={styles.preview}>{targetsLabel}</p>
-        <p className={styles.preview}>{untouchedLabel}</p>
-        <button
-          type="button"
-          className={styles.previewButton}
-          onClick={triggerPreview}
-        >
-          预览本轮修改
-        </button>
+        {scopeVisible ? (
+          <>
+            <p className={styles.preview}>{targetsLabel}</p>
+            <p className={styles.preview}>{untouchedLabel}</p>
+          </>
+        ) : (
+          <p className={styles.preview}>点击「预览本轮修改」查看本轮会涉及哪些段落。</p>
+        )}
+        <div className={styles.previewActions}>
+          <button
+            type="button"
+            className={styles.previewButton}
+            onClick={handlePreview}
+            disabled={!hasTargets}
+          >
+            预览本轮修改
+          </button>
+          <button
+            type="button"
+            className={styles.confirmButton}
+            onClick={handleConfirm}
+            disabled={!hasTargets}
+          >
+            确认改写
+          </button>
+        </div>
       </section>
 
       <section>

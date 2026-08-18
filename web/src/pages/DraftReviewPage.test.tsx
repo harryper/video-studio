@@ -175,10 +175,26 @@ describe("DraftReviewPage", () => {
     await screen.findByText("海水的盐来自岩石风化");
 
     await user.click(screen.getByLabelText("交给 AI：这里没讲懂"));
+
+    // Spec §10.4: scope preview must surface BEFORE the model is invoked.
+    // The "预览本轮修改" button only reveals which paragraphs are in scope;
+    // it does NOT call triggerRewrite.
+    expect(screen.queryByText("将修改：段落 2")).not.toBeInTheDocument();
+    expect(screen.queryByText("不会修改：段落 1、3")).not.toBeInTheDocument();
+
     await user.click(screen.getByRole("button", { name: "预览本轮修改" }));
 
     expect(await screen.findByText("将修改：段落 2")).toBeVisible();
     expect(screen.getByText("不会修改：段落 1、3")).toBeVisible();
+    // The model has NOT been invoked yet — clicking the preview button
+    // only reveals the scope; "确认改写" is what triggers the rewrite.
+    expect(triggerRewriteMock).not.toHaveBeenCalled();
+
+    // Clicking "确认改写" actually runs the rewrite.
+    await user.click(screen.getByRole("button", { name: "确认改写" }));
+    await waitFor(() => {
+      expect(triggerRewriteMock).toHaveBeenCalled();
+    });
   });
 
   it("survives an autosave conflict by showing both versions rather than overwriting", async () => {
@@ -322,6 +338,37 @@ describe("DraftReviewPage", () => {
     );
   });
 
+  it("collapses to mobile tabs when the viewport is narrow (no forceMobile)", async () => {
+    const originalMatchMedia = window.matchMedia;
+    Object.defineProperty(window, "matchMedia", {
+      configurable: true,
+      writable: true,
+      value: vi.fn().mockImplementation((query: string) => ({
+        matches: query.includes("max-width: 768px"),
+        media: query,
+        onchange: null,
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+        addListener: () => undefined,
+        removeListener: () => undefined,
+        dispatchEvent: () => true,
+      })),
+    });
+    try {
+      render(<DraftReviewPage projectId="p1" draftArtifactId="draft-art" />);
+      await screen.findByText("海水的盐来自岩石风化");
+      for (const tab of ["路线图", "正文", "批注"]) {
+        expect(screen.getByRole("tab", { name: tab })).toBeVisible();
+      }
+    } finally {
+      Object.defineProperty(window, "matchMedia", {
+        configurable: true,
+        writable: true,
+        value: originalMatchMedia,
+      });
+    }
+  });
+
   it("ignored-quality reason is enforced before saving", async () => {
     renderPage();
     await screen.findByText("海水的盐来自岩石风化");
@@ -402,17 +449,24 @@ describe("DraftReviewPage", () => {
       expect(postCommentMock).toHaveBeenCalled();
     });
 
-    // Click the preview / trigger rewrite.
-    const trigger = await screen.findByRole("button", { name: /预览本轮修改/ });
-    await user.click(trigger);
+    // Click the preview button (scope only), then "确认改写" to run the model.
+    await user.click(screen.getByRole("button", { name: "预览本轮修改" }));
+    await user.click(screen.getByRole("button", { name: "确认改写" }));
     await waitFor(() => {
       expect(triggerRewriteMock).toHaveBeenCalled();
     });
 
-    // Side-by-side diff renders; accept the only hunk.
-    const acceptBtn = await screen.findByRole("button", { name: /接受修改/ });
-    await user.click(acceptBtn);
+    // Side-by-side diff renders; adopt the new revision (it is already the
+    // head because triggerRewrite ran in the previous step). The diff
+    // accept button only acknowledges the preview — it does NOT call
+    // approveDraft (which would create a separate approved_script
+    // artifact, per spec §10.6). The button label therefore avoids
+    // "接受修改" so users don't think they are calling the backend
+    // approval endpoint.
+    const adoptBtn = await screen.findByRole("button", { name: /采用此版本/ });
+    await user.click(adoptBtn);
     expect(screen.getByText(/新版本已采纳/)).toBeVisible();
+    expect(approveDraftMock).not.toHaveBeenCalled();
   });
 
   it("explicit reopen confirmation appears on DraftReviewPage too", async () => {

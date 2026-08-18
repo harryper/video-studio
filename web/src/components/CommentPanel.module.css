@@ -87,6 +87,12 @@
   font-size: 0.9rem;
 }
 
+.previewActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
 .previewButton {
   padding: 0.5rem 1rem;
   background: var(--cs-accent, #2563eb);
@@ -99,6 +105,30 @@
 .previewButton:focus-visible {
   outline: 2px solid var(--cs-accent-strong, #1d4ed8);
   outline-offset: 2px;
+}
+
+.previewButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.confirmButton {
+  padding: 0.5rem 1rem;
+  background: transparent;
+  color: var(--cs-accent, #2563eb);
+  border: 1px solid var(--cs-accent, #2563eb);
+  border-radius: 0.5rem;
+  cursor: pointer;
+}
+
+.confirmButton:focus-visible {
+  outline: 2px solid var(--cs-accent-strong, #1d4ed8);
+  outline-offset: 2px;
+}
+
+.confirmButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
 .hint {

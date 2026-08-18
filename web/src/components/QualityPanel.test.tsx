@@ -1,13 +1,16 @@
 /**
  * QualityPanel renders the 7 spec §10.5 checks; ignoring any one of them
- * requires a non-empty reason (no fake composite score).
+ * requires a non-empty reason (no fake composite score). Each check can
+ * carry paragraph anchors (段落 N) so callers can pin reminders to
+ * specific paragraphs (spec §10.5).
  */
 
 import { describe, expect, it } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-import { QualityPanel } from "./QualityPanel";
+import { DEFAULT_CHECKS, QualityPanel } from "./QualityPanel";
+import type { QualityCheck } from "./QualityPanel";
 
 describe("QualityPanel", () => {
   it("renders all seven §10.5 checks with Chinese headings", () => {
@@ -57,5 +60,50 @@ describe("QualityPanel", () => {
     expect(
       screen.getByText(/已忽略：本段落已经多次交叉验证/),
     ).toBeVisible();
+  });
+
+  it("pins the seven §10.5 checks as DEFAULT_CHECKS with paragraph anchors", () => {
+    expect(DEFAULT_CHECKS).toHaveLength(7);
+    for (const check of DEFAULT_CHECKS) {
+      expect(check).toHaveProperty("id");
+      expect(check).toHaveProperty("heading");
+      expect(check).toHaveProperty("description");
+      expect(check).toHaveProperty("paragraphs");
+      expect(Array.isArray(check.paragraphs)).toBe(true);
+    }
+  });
+
+  it("renders linked paragraph anchors when a check carries them", () => {
+    const checks: QualityCheck[] = [
+      {
+        id: "numbers",
+        heading: "可疑数字",
+        description: "段落中含数字却没有引用来源或交叉验证",
+        paragraphs: ["段落 1", "段落 3"],
+      },
+      {
+        id: "speech",
+        heading: "难以口播的句子",
+        description: "句子过长、嵌套从句或音节拗口",
+        paragraphs: ["段落 2"],
+      },
+    ];
+    render(<QualityPanel checks={checks} />);
+    expect(screen.getByText("段落 1")).toBeVisible();
+    expect(screen.getByText("段落 2")).toBeVisible();
+    expect(screen.getByText("段落 3")).toBeVisible();
+  });
+
+  it("shows the empty-state text when no paragraphs are linked", () => {
+    const checks: QualityCheck[] = [
+      {
+        id: "numbers",
+        heading: "可疑数字",
+        description: "段落中含数字却没有引用来源或交叉验证",
+        paragraphs: [],
+      },
+    ];
+    render(<QualityPanel checks={checks} />);
+    expect(screen.getByText(/当前稿件未发现此问题/)).toBeVisible();
   });
 });

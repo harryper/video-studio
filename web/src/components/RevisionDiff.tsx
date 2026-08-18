@@ -7,10 +7,17 @@
  *   * ``removed``  — paragraph only in current
  *   * ``added``    — paragraph only in candidate
  *
- * Each modified paragraph renders side-by-side old/new with an
- * "接受修改" toggle. If any are rejected, the rewrite result is
- * discarded (the brief does not expose partial-accept semantics — the
- * UI surfaces a banner asking the user to re-issue with revised
+ * Each modified paragraph renders side-by-side old/new with a
+ * "保留修改 / 拒收修改" toggle. The bottom "采用此版本" button adopts
+ * the candidate as the new head — note that the candidate already
+ * exists as a draft artifact because triggerRewrite created it; the
+ * ``onAccept`` callback only acknowledges the preview (see
+ * DraftReviewPage.handleAcceptDiff). It does NOT call approveDraft —
+ * that endpoint produces a separate ``approved_script`` artifact per
+ * spec §10.6, which is exposed via the dedicated "定稿本版本" button
+ * elsewhere in the workspace. If any paragraph is rejected the button
+ * stays disabled; the brief does not expose partial-accept semantics
+ * (the UI surfaces a banner asking the user to re-issue with revised
  * comments instead).
  */
 
@@ -147,7 +154,7 @@ export function RevisionDiff({
           onClick={onAccept}
           disabled={anyRejected || entries.length === 0}
         >
-          接受修改
+          采用此版本
         </button>
         <button type="button" className={styles.discard} onClick={onDiscard}>
           丢弃改写

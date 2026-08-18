@@ -5,6 +5,10 @@
  * 未推进调查的段落 / 难以口播的句子 / 预计时长 / 建议拆题位置. Each
  * is a static advisory card; the panel never invents a composite score.
  *
+ * Each check can carry paragraph anchors ("段落 1", "段落 3") so callers
+ * can pin a reminder to specific paragraphs. When no paragraphs are
+ * linked the panel falls back to the "当前稿件未发现此问题" empty state.
+ *
  * Ignoring a check requires a non-empty reason; the brief forbids silent
  * suppressions. Reasons live in component-local state — there is no
  * backend for these yet, and the spec's contract is "ignore with a reason,
@@ -15,14 +19,14 @@ import { useState } from "react";
 
 import styles from "./QualityPanel.module.css";
 
-interface QualityCheck {
+export interface QualityCheck {
   id: string;
   heading: string;
   description: string;
   paragraphs: string[];
 }
 
-const CHECKS: QualityCheck[] = [
+export const DEFAULT_CHECKS: QualityCheck[] = [
   {
     id: "numbers",
     heading: "可疑数字",
@@ -71,7 +75,13 @@ interface IgnoreState {
   reason: string;
 }
 
-export function QualityPanel(): React.ReactElement {
+interface QualityPanelProps {
+  checks?: QualityCheck[];
+}
+
+export function QualityPanel({
+  checks = DEFAULT_CHECKS,
+}: QualityPanelProps): React.ReactElement {
   const [ignoreState, setIgnoreState] = useState<Record<string, IgnoreState>>({});
   const [activeIgnore, setActiveIgnore] = useState<string | null>(null);
   const [draft, setDraft] = useState<string>("");
@@ -99,7 +109,7 @@ export function QualityPanel(): React.ReactElement {
       <h2 className={styles.heading}>质量检查</h2>
       <p className={styles.intro}>忽略任何一项检查都需要说明原因，以便后续审计。</p>
       <ul className={styles.list}>
-        {CHECKS.map((check) => {
+        {checks.map((check) => {
           const ignored = ignoreState[check.id];
           return (
             <li key={check.id} className={styles.item}>
