@@ -1,0 +1,30 @@
+[Unit]
+Description=Content Studio worker (long-running stage dispatcher)
+Documentation=https://github.com/.../docs/operations/content-studio.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=video-studio
+Group=video-studio
+WorkingDirectory=/opt/video-studio-next
+Environment="PYTHONUNBUFFERED=1"
+Environment="STUDIO_DATABASE_URL=sqlite+pysqlite:////data/studio.db"
+ExecStart=/opt/video-studio-next/.venv/bin/python -m studio.worker_main
+Restart=on-failure
+RestartSec=5
+# Cap how long systemd waits for the worker to report healthy. The dispatch
+# loop starts within a few seconds; anything longer means a misconfiguration
+# (missing API key, wrong DB path) and the operator wants a loud failure.
+TimeoutStartSec=120
+# Default stop timeout is 90s, which matches the lease window (900 s) with
+# plenty of headroom. The worker honours SIGTERM and drains in-flight jobs
+# before exiting; ``KillMode=mixed`` lets systemd SIGKILL after the timeout
+# if the worker is wedged.
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=90
+
+[Install]
+WantedBy=multi-user.target

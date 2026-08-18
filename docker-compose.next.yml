@@ -9,12 +9,54 @@ services:
       STUDIO_DATABASE_URL: sqlite+pysqlite:////data/studio.db
     volumes:
       - studio-data:/data
+    # read_only: true pins the container root filesystem so the only
+    # mutable surface is the ``studio-data`` volume mounted at ``/data``.
+    # This is the layer-1 mitigation against a runaway web process
+    # silently writing to the image; the volume still carries the SQLite
+    # DB and any media artefacts the worker emits.
+    read_only: true
+    # tmpfs entries cover the small handful of paths the runtime needs to
+    # write even when the root fs is read-only (uvicorn cache, alembic
+    # version file when ``--check`` is run, etc.). All paths are scoped to
+    # the container and never leak back to the host.
+    tmpfs:
+      - /tmp
+      - /run
+      - /home
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:10000/api/health').read()"]
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
+
+  content-studio-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.next
+    # No ports — the worker talks to the SQLite DB over the volume mount,
+    # not the network. Long-running pipeline service, restart on any
+    # crash so the next tick picks up where recovery left off.
+    restart: on-failure
+    environment:
+      STUDIO_DATABASE_URL: sqlite+pysqlite:////data/studio.db
+      # Same path as the web service so both processes share the SQLite
+      # file via the ``studio-data`` volume mount below.
+      CONTENT_STUDIO_DB: /data/studio.db
+    volumes:
+      - studio-data:/data
+    # ``python -m studio.worker_main`` is the same module path the systemd
+    # unit invokes, so the two deploys share the entrypoint verbatim.
+    command: ["python", "-m", "studio.worker_main"]
+    healthcheck:
+      # ``pgrep`` confirms the dispatch loop is alive — the worker has no
+      # inbound HTTP surface, so this is the lightest signal the
+      # orchestrator can use to flag a wedged worker.
+      test: ["CMD-SHELL", "pgrep -f 'python -m studio.worker_main' >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
 
 volumes:
   studio-data:
