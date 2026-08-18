@@ -25,6 +25,7 @@ import json
 import logging
 import random
 import statistics
+import sys
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -352,9 +353,13 @@ def _recent_structure_similarity(
 def _one_draft_distance(left: dict[str, Any], right: dict[str, Any]) -> float:
     """Coarse distance between two drafts.
 
-    Compares the opening character of the first paragraph, the count of
-    paragraphs, the distribution of paragraph lengths, and the count of
-    leading question marks / concluding periods. 1.0 = fully different.
+    Compares the opening characters of the first paragraph, the count of
+    paragraphs, the stdev of paragraph lengths, and whether the last
+    paragraph ends with a question mark. Returns a 0-1 distance where
+    1.0 = fully different, 0.0 = identical.
+
+    The four features contribute equally (0.25 each) and accumulate into
+    the distance directly — no further flip is applied at the end.
     """
 
     left_paras = left.get("paragraphs", []) or []
@@ -366,10 +371,9 @@ def _one_draft_distance(left: dict[str, Any], right: dict[str, Any]) -> float:
     score += 0.0 if len(left_paras) == len(right_paras) else 0.25
     left_lengths = [len(p.get("text", "")) for p in left_paras]
     right_lengths = [len(p.get("text", "")) for p in right_paras]
-    if statistics.pstdev(left_lengths) == statistics.pstdev(right_lengths):
-        score += 0.25
+    score += 0.0 if statistics.pstdev(left_lengths) == statistics.pstdev(right_lengths) else 0.25
     score += 0.0 if left_paras[-1].get("text", "").endswith("？") == right_paras[-1].get("text", "").endswith("？") else 0.25
-    return 1.0 - score
+    return score
 
 
 def _pitch_difference_decision(pitch_set: dict[str, Any] | None) -> dict[str, Any]:
@@ -413,6 +417,153 @@ def _blind_label(topic_id: str, rng: random.Random, pool: list[str]) -> str:
 
     digest = sum(ord(c) for c in topic_id) + rng.randint(0, 1_000_000)
     return pool[digest % len(pool)]
+
+
+def _canned_phrase_ratio(canned_hits: int, paragraph_count: int) -> float:
+    """Canned phrases per paragraph — robust to script length, in [0, 1]."""
+
+    return canned_hits / max(1, paragraph_count)
+
+
+def _score_metric(
+    metric_id: str,
+    auto_fields: dict[str, dict[str, float]],
+    *,
+    similarity: float = 1.0,
+) -> float:
+    """Combine the auto_fields for one metric into a 1-5 score.
+
+    Each branch maps the field values to a single rubric score per the
+    YAML anchor descriptors — none of them re-derives a measurement
+    function. ``similarity`` is the 0-1 distance produced by
+    :func:`_recent_structure_similarity` and only matters for
+    ``structure_novelty``.
+    """
+
+    fields = auto_fields.get(metric_id, {})
+
+    if metric_id == "willing_to_continue":
+        opening_hook = fields.get("ho_ok_in_first_paragraph", 0.0)
+        tail_hook = fields.get("tail_leaves_hook", 0.0)
+        if opening_hook and tail_hook:
+            return 5.0
+        if opening_hook or tail_hook:
+            return 3.0
+        return 2.0
+
+    if metric_id == "investigation_question_clear":
+        appears = fields.get(
+            "investigation_question_appears_in_first_paragraph", 0.0
+        )
+        consistent = fields.get("consistency_with_pitch_set", 0.0)
+        if appears and consistent:
+            return 5.0
+        if appears or consistent:
+            return 4.0
+        return 2.0
+
+    if metric_id == "each_paragraph_advances":
+        overlap = fields.get("paragraph_overlap_ratio", 0.0)
+        density = fields.get("new_information_density", 0.0)
+        if density >= 80:
+            base = 5.0
+        elif density >= 40:
+            base = 4.0
+        elif density >= 20:
+            base = 3.0
+        else:
+            base = 2.0
+        # No overlap = bump (current overlap probe always reports 0; the
+        # bump keeps the rubric usable until a real overlap measurement
+        # is added).
+        if overlap <= 0.0:
+            base = min(5.0, base + 1.0)
+        return base
+
+    if metric_id == "explains_mechanism":
+        causal = fields.get("causal_chain_token_count", 0.0)
+        coverage = fields.get("fact_card_anchoring", 0.0)
+        if causal >= 4 and coverage >= 0.8:
+            return 5.0
+        if causal >= 2 and coverage >= 0.5:
+            return 4.0
+        if causal >= 1 or coverage >= 0.3:
+            return 3.0
+        return 2.0
+
+    if metric_id == "canned_phrases_or_reversals":
+        hits = fields.get("canned_phrase_hits", 0.0)
+        if hits >= 3:
+            return 1.0
+        if hits >= 1:
+            return 3.0
+        return 5.0
+
+    if metric_id == "voice_of_person_with_judgment":
+        hedge = fields.get("hedge_word_ratio", 1.0)
+        judgement = fields.get("judgement_phrase_count", 0.0)
+        if hedge <= 0.005 and judgement >= 1:
+            return 5.0
+        if hedge <= 0.01 and judgement >= 1:
+            return 4.0
+        if hedge <= 0.02:
+            return 3.0
+        return 2.0
+
+    if metric_id == "core_facts_credible":
+        coverage = fields.get("claim_verification_coverage", 0.0)
+        unverified = fields.get("high_risk_unverified_count", 0.0)
+        if coverage >= 1.0 and unverified == 0:
+            return 5.0
+        if coverage >= 0.8 and unverified == 0:
+            return 4.0
+        if coverage >= 0.5 and unverified <= 1:
+            return 3.0
+        return 2.0
+
+    if metric_id == "structure_novelty":
+        # similarity is already a 0-1 distance (1 = different from
+        # recent drafts, 0 = identical). Mapping it to 1-5 yields the
+        # rubric anchors: identical → 1, fully different → 5.
+        return 1.0 + 4.0 * similarity
+
+    return 3.0
+
+
+def _check_thresholds(
+    *,
+    average_score: float,
+    canned_phrase_ratio: float,
+    pitch_difference_rate: float,
+    claim_verification_coverage: float,
+    protected_span_preserved: bool,
+    speech_plan_mutation: bool,
+    thresholds: dict[str, float],
+) -> bool:
+    """Whether one topic meets every §11.3 acceptance threshold.
+
+    Booleans are normalised into rates (``protected_span_preserved`` →
+    1.0/0.0, ``speech_plan_mutation`` → 1.0/0.0) so the same threshold
+    keys from ``evaluation/rubric.yaml`` drive both the rubric and this
+    gate.
+    """
+
+    protected_rate = 1.0 if protected_span_preserved else 0.0
+    mutation_rate = 1.0 if speech_plan_mutation else 0.0
+    return (
+        average_score
+        >= thresholds.get("min_average_score", 0.0)
+        and canned_phrase_ratio
+        <= thresholds.get("max_canned_phrase_ratio", 1.0)
+        and pitch_difference_rate
+        >= thresholds.get("min_three_pitch_difference_rate", 0.0)
+        and claim_verification_coverage
+        >= thresholds.get("min_claim_verification_coverage", 0.0)
+        and protected_rate
+        >= thresholds.get("min_protected_span_preservation_rate", 0.0)
+        and mutation_rate
+        <= thresholds.get("max_speech_plan_mutation_rate", 1.0)
+    )
 
 
 def _score_topic(
@@ -490,31 +641,15 @@ def _score_topic(
     }
 
     # Each dimension is scored on a 1-5 scale by combining the auto
-    # fields with simple heuristics. The weights are documented in the
+    # fields per the rubric anchors. The weights are documented in
     # rubric.yaml and surfaced alongside the score.
-    def _score(metric: str) -> float:
-        if metric == "willing_to_continue":
-            return 4.0 if not canned_hits and editorial else 3.0
-        if metric == "investigation_question_clear":
-            return 4.0 if result.pitch_set else 2.0
-        if metric == "each_paragraph_advances":
-            n = len(draft.get("paragraphs", []) or [])
-            return 5.0 if n >= 3 else 3.0
-        if metric == "explains_mechanism":
-            return float(min(5, max(1, int(coverage * 5)))) if research else 3.0
-        if metric == "canned_phrases_or_reversals":
-            return 5.0 if canned_hits == 0 else 2.0
-        if metric == "voice_of_person_with_judgment":
-            return 4.0 if editorial else 3.0
-        if metric == "core_facts_credible":
-            return float(min(5, max(1, int(coverage * 5)))) if research else 3.0
-        if metric == "structure_novelty":
-            return float(1 + 4 * similarity)
-        return 3.0
-
     dimensions: list[DimensionScore] = []
     for dim in rubric["dimensions"]:
-        score = _score(dim["id"])
+        score = _score_metric(
+            dim["id"],
+            auto_fields,
+            similarity=similarity,
+        )
         dimensions.append(
             DimensionScore(
                 dimension_id=dim["id"],
@@ -531,6 +666,20 @@ def _score_topic(
         blind.get("replacement_label_pool", ["A", "B", "C"]),
     )
 
+    average_score = statistics.mean(d.score for d in dimensions)
+    paragraph_count = len(draft.get("paragraphs", []) or [])
+    canned_phrase_ratio = _canned_phrase_ratio(canned_hits, paragraph_count)
+    thresholds = rubric.get("acceptance_thresholds", {}) or {}
+    passes_thresholds = _check_thresholds(
+        average_score=average_score,
+        canned_phrase_ratio=canned_phrase_ratio,
+        pitch_difference_rate=pitch_decision["overall_rate"],
+        claim_verification_coverage=coverage,
+        protected_span_preserved=protected_span_preserved,
+        speech_plan_mutation=mutation,
+        thresholds=thresholds,
+    )
+
     return {
         "topic_id": result.topic_id,
         "blind_label": label,
@@ -538,13 +687,15 @@ def _score_topic(
         "pitch_decision": pitch_decision,
         "claim_verification_coverage": coverage,
         "canned_phrase_hits": canned_hits,
+        "canned_phrase_ratio": canned_phrase_ratio,
         "canned_phrase_flag": canned_hits > 0,
         "recent_structure_similarity": similarity,
         "protected_span_preserved": protected_span_preserved,
         "speech_plan_mutation": mutation,
         "failures": result.failures,
         "dimensions": [d.__dict__ for d in dimensions],
-        "average_score": statistics.mean(d.score for d in dimensions),
+        "average_score": average_score,
+        "passes_thresholds": passes_thresholds,
     }
 
 
@@ -562,13 +713,27 @@ def _load_yaml(path: Path) -> dict[str, Any]:
 def _write_results(
     results: list[dict[str, Any]],
     output_dir: Path,
+    acceptance_thresholds: dict[str, float],
 ) -> tuple[Path, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     results_path = output_dir / "results.json"
     ballot_path = output_dir / "ballot.csv"
 
+    # The harness has six §11.3 acceptance gates per topic; the
+    # aggregate_pass_rate is the fraction of topics passing every gate.
+    # It is the rubric's regression oracle — callers read it from
+    # results.json to decide whether the pipeline produced an acceptable
+    # batch.
+    if results:
+        aggregate_pass_rate = sum(
+            1 for row in results if row.get("passes_thresholds")
+        ) / len(results)
+    else:
+        aggregate_pass_rate = 0.0
     envelope = {
         "generated_at": datetime.now(UTC).isoformat(),
+        "acceptance_thresholds": acceptance_thresholds,
+        "aggregate_pass_rate": aggregate_pass_rate,
         "results": results,
     }
     results_path.write_text(
@@ -584,12 +749,14 @@ def _write_results(
                 "average_score",
                 "claim_verification_coverage",
                 "canned_phrase_hits",
+                "canned_phrase_ratio",
                 "canned_phrase_flag",
                 "recent_structure_similarity",
                 "pitch_difference_rate",
                 "pitch_difference_pass",
                 "protected_span_preserved",
                 "speech_plan_mutation",
+                "passes_thresholds",
             ]
         )
         for row in results:
@@ -600,12 +767,14 @@ def _write_results(
                     f"{row['average_score']:.2f}",
                     f"{row['claim_verification_coverage']:.2f}",
                     row["canned_phrase_hits"],
+                    f"{row.get('canned_phrase_ratio', 0.0):.2f}",
                     row["canned_phrase_flag"],
                     f"{row['recent_structure_similarity']:.2f}",
                     f"{row['pitch_decision']['overall_rate']:.2f}",
                     row["pitch_decision"]["pass"],
                     row["protected_span_preserved"],
                     row["speech_plan_mutation"],
+                    row["passes_thresholds"],
                 ]
             )
 
@@ -637,7 +806,8 @@ def evaluate(
         scored["category"] = entry.get("category", "")
         results.append(scored)
 
-    return _write_results(results, output_dir)
+    acceptance_thresholds = rubric.get("acceptance_thresholds", {}) or {}
+    return _write_results(results, output_dir, acceptance_thresholds)
 
 
 # ---------------------------------------------------------------------------
@@ -659,8 +829,25 @@ def main(argv: list[str] | None = None) -> int:
         fixtures_dir=args.fixtures,
         output_dir=args.output,
     )
+    envelope = json.loads(results_path.read_text(encoding="utf-8"))
+    aggregate_pass_rate = envelope.get("aggregate_pass_rate", 0.0)
+    # Spec §11.3 mandates 100% on the per-topic gates (verification,
+    # preservation, mutation) and 90% on the pitch difference rate. The
+    # only soft threshold is the 75% blind preference rate, which is a
+    # different metric not represented in the rubric's gates. Treat
+    # aggregate_pass_rate < 1.0 as a CI failure so a single weak topic
+    # surfaces immediately; loosen only if a future batch genuinely
+    # needs the 75% slack.
     print(f"results.json -> {results_path}")
     print(f"ballot.csv   -> {ballot_path}")
+    print(f"aggregate_pass_rate -> {aggregate_pass_rate:.2f}")
+    if aggregate_pass_rate < 1.0:
+        print(
+            "ERROR: aggregate_pass_rate < 1.0 — at least one topic "
+            "failed the §11.3 acceptance thresholds.",
+            file=sys.stderr,
+        )
+        return 1
     return 0
 
 

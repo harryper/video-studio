@@ -12,9 +12,16 @@ The ``evaluate`` subcommand runs the offline evaluation harness defined in
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 
-from studio.evaluation import DEFAULT_FIXTURES_DIR, DEFAULT_OUTPUT_DIR, DEFAULT_RUBRIC_PATH, DEFAULT_TOPICS_PATH, evaluate
+from studio.evaluation import (
+    DEFAULT_FIXTURES_DIR,
+    DEFAULT_OUTPUT_DIR,
+    DEFAULT_RUBRIC_PATH,
+    DEFAULT_TOPICS_PATH,
+    evaluate,
+)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -46,6 +53,23 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"results.json -> {results_path}")
         print(f"ballot.csv   -> {ballot_path}")
+        envelope = json.loads(results_path.read_text(encoding="utf-8"))
+        aggregate_pass_rate = envelope.get("aggregate_pass_rate", 0.0)
+        print(f"aggregate_pass_rate -> {aggregate_pass_rate:.2f}")
+        # Spec §11.3 mandates 100% on the per-topic gates (verification,
+        # preservation, mutation) and 90% on the pitch difference rate.
+        # The only soft threshold is the 75% blind preference rate, which
+        # is a separate metric not represented in the rubric's gates.
+        # Treat aggregate_pass_rate < 1.0 as a CI failure so a single
+        # weak topic surfaces immediately; loosen only if a future batch
+        # genuinely needs the 75% slack.
+        if aggregate_pass_rate < 1.0:
+            print(
+                "ERROR: aggregate_pass_rate < 1.0 — at least one topic "
+                "failed the §11.3 acceptance thresholds.",
+                file=sys.stderr,
+            )
+            return 1
         return 0
 
     parser.error(f"unknown command: {args.command}")
