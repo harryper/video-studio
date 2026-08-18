@@ -15,27 +15,16 @@ import {
   retryJob,
 } from "../api/client";
 import type {
-  ApiError,
   ArtifactHistoryEntry,
   ProjectSummary,
 } from "../api/types";
+import { errorMessage } from "../components/errorMessage";
 import { JobProgress } from "../components/JobProgress";
 import { StageStepper } from "../components/StageStepper";
 import { stageLabel } from "../labels";
 import { Link } from "../router";
 
 import styles from "./ProjectWorkspace.module.css";
-
-function errorMessage(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  if (err && typeof err === "object" && "body" in err) {
-    const apiErr = err as ApiError;
-    if (apiErr.body && typeof apiErr.body.message === "string") {
-      return apiErr.body.message;
-    }
-  }
-  return "操作失败";
-}
 
 const ARTIFACT_KIND_LABEL: Record<string, string> = {
   diagnosis: "主题诊断",

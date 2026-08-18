@@ -1,128 +1,95 @@
 /**
  * Projects dashboard route at ``/``.
  *
- * Lists every project with its editorial status label, exposes stage and
- * status filters, and provides a minimal new-project form (title + topic
- * both required by the API). Each row is a link to the per-project
- * workspace so the browser back / forward stack keeps working.
+ * Lists every project bucketed by editorial status per spec §10.1:
+ * 草稿 / 等待选切口 / 等待审稿 / 已定稿 / 制作中 / 已完成.
+ *
+ * The new-project form defaults to a single required topic field;
+ * the optional title lives behind a collapsed advanced section so the
+ * dashboard is not a wall of inputs. The API still requires both
+ * fields, so when the title is left blank we derive one from the
+ * topic (``topic.slice(0, 60)``) on submit.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
 import { createProject, listProjects } from "../api/client";
-import type {
-  ApiError,
-  CreateProjectInput,
-  ProjectListFilters,
-  ProjectSummary,
-  StageName,
-  StageStatus,
-} from "../api/types";
+import type { CreateProjectInput, ProjectSummary } from "../api/types";
+import {
+  BUCKET_LABEL,
+  BUCKET_ORDER,
+  categorizeProject,
+  type BucketName,
+} from "../categorize";
+import { errorMessage } from "../components/errorMessage";
 import { stageLabel } from "../labels";
 import { Link } from "../router";
 
 import styles from "./ProjectsPage.module.css";
 
-const STAGE_SELECT: StageName[] = [
-  "diagnosis",
-  "research",
-  "pitches",
-  "narrative",
-  "draft",
-  "rewrite",
-  "speech",
-  "approval",
-];
+const TITLE_LIMIT = 60;
 
-const STATUS_SELECT: StageStatus[] = [
-  "queued",
-  "running",
-  "finished",
-  "failed",
-  "cancelled",
-];
-
-const STAGE_LABEL_FOR_SELECT: Record<StageName, string> = {
-  diagnosis: "主题诊断",
-  research: "调研",
-  pitches: "切口",
-  narrative: "结构",
-  draft: "初稿",
-  rewrite: "改写",
-  speech: "配音",
-  approval: "终审",
-};
-
-const STATUS_LABEL_FOR_SELECT: Record<StageStatus, string> = {
-  queued: "排队",
-  running: "进行中",
-  finished: "已完成",
-  failed: "失败",
-  cancelled: "已取消",
-};
-
-function errorMessage(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  if (err && typeof err === "object" && "body" in err) {
-    const apiErr = err as ApiError;
-    if (apiErr.body && typeof apiErr.body.message === "string") {
-      return apiErr.body.message;
-    }
-  }
-  return "操作失败";
+function deriveTitle(topic: string): string {
+  const trimmed = topic.trim();
+  if (!trimmed) return "";
+  return trimmed.slice(0, TITLE_LIMIT);
 }
 
 export function ProjectsPage(): React.ReactElement {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
-  const [stage, setStage] = useState<StageName | "">("");
-  const [status, setStatus] = useState<StageStatus | "">("");
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
-  const [title, setTitle] = useState<string>("");
   const [topic, setTopic] = useState<string>("");
+  const [title, setTitle] = useState<string>("");
   const [creating, setCreating] = useState<boolean>(false);
   const [createError, setCreateError] = useState<string | null>(null);
-
-  const filters = useMemo<ProjectListFilters>(
-    () => ({
-      stage: stage === "" ? null : stage,
-      status: status === "" ? null : status,
-    }),
-    [stage, status],
-  );
 
   const refresh = useCallback(async (): Promise<void> => {
     setLoading(true);
     setError(null);
     try {
-      const data = await listProjects(filters);
+      const data = await listProjects();
       setProjects(data);
     } catch (err) {
       setError(errorMessage(err));
     } finally {
       setLoading(false);
     }
-  }, [filters]);
+  }, []);
 
   useEffect(() => {
     void refresh();
   }, [refresh]);
 
-  const onSubmit = async (event: React.FormEvent<HTMLFormElement>): Promise<void> => {
+  const buckets = useMemo<Map<BucketName, ProjectSummary[]>>(() => {
+    const grouped = new Map<BucketName, ProjectSummary[]>();
+    for (const name of BUCKET_ORDER) {
+      grouped.set(name, []);
+    }
+    for (const project of projects) {
+      const name = categorizeProject(project);
+      grouped.get(name)?.push(project);
+    }
+    return grouped;
+  }, [projects]);
+
+  const onSubmit = async (
+    event: React.FormEvent<HTMLFormElement>,
+  ): Promise<void> => {
     event.preventDefault();
     if (creating) return;
-    const trimmedTitle = title.trim();
     const trimmedTopic = topic.trim();
-    if (!trimmedTitle || !trimmedTopic) {
-      setCreateError("标题和主题均不能为空");
+    if (!trimmedTopic) {
+      setCreateError("主题不能为空");
       return;
     }
+    const finalTitle = title.trim() || deriveTitle(trimmedTopic);
     setCreating(true);
     setCreateError(null);
     try {
       const input: CreateProjectInput = {
-        title: trimmedTitle,
+        title: finalTitle,
         topic: trimmedTopic,
       };
       const created = await createProject(input);
@@ -138,8 +105,8 @@ export function ProjectsPage(): React.ReactElement {
         },
         ...prev,
       ]);
-      setTitle("");
       setTopic("");
+      setTitle("");
     } catch (err) {
       setCreateError(errorMessage(err));
     } finally {
@@ -156,16 +123,6 @@ export function ProjectsPage(): React.ReactElement {
 
       <form className={styles.form} onSubmit={onSubmit} aria-label="创建项目">
         <label className={styles.field}>
-          <span>标题</span>
-          <input
-            type="text"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-            required
-            maxLength={120}
-          />
-        </label>
-        <label className={styles.field}>
           <span>主题</span>
           <input
             type="text"
@@ -173,8 +130,21 @@ export function ProjectsPage(): React.ReactElement {
             onChange={(e) => setTopic(e.target.value)}
             required
             maxLength={240}
+            data-testid="new-project-topic"
           />
         </label>
+        <details className={styles.advanced}>
+          <summary className={styles.advancedSummary}>高级选项</summary>
+          <label className={styles.field}>
+            <span>标题</span>
+            <input
+              type="text"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              maxLength={120}
+            />
+          </label>
+        </details>
         <button type="submit" className={styles.submit} disabled={creating}>
           {creating ? "创建中…" : "创建"}
         </button>
@@ -184,37 +154,6 @@ export function ProjectsPage(): React.ReactElement {
           </p>
         ) : null}
       </form>
-
-      <section className={styles.filters} aria-label="筛选项目">
-        <label className={styles.filterField}>
-          <span>阶段</span>
-          <select
-            value={stage}
-            onChange={(e) => setStage(e.target.value as StageName | "")}
-          >
-            <option value="">全部阶段</option>
-            {STAGE_SELECT.map((value) => (
-              <option key={value} value={value}>
-                {STAGE_LABEL_FOR_SELECT[value]}
-              </option>
-            ))}
-          </select>
-        </label>
-        <label className={styles.filterField}>
-          <span>状态</span>
-          <select
-            value={status}
-            onChange={(e) => setStatus(e.target.value as StageStatus | "")}
-          >
-            <option value="">全部状态</option>
-            {STATUS_SELECT.map((value) => (
-              <option key={value} value={value}>
-                {STATUS_LABEL_FOR_SELECT[value]}
-              </option>
-            ))}
-          </select>
-        </label>
-      </section>
 
       {loading ? <p className={styles.info}>加载中…</p> : null}
       {error ? (
@@ -227,22 +166,39 @@ export function ProjectsPage(): React.ReactElement {
         <p className={styles.info}>暂无项目</p>
       ) : null}
 
-      <ul className={styles.list}>
-        {projects.map((project) => (
-          <li key={project.id} className={styles.item}>
-            <Link
-              to={`/projects/${project.id}`}
-              className={styles.itemLink}
-            >
-              <span className={styles.itemTitle}>{project.title}</span>
-              <span className={styles.itemTopic}>{project.topic}</span>
-              <span className={styles.itemStatus}>
-                {stageLabel(project.latest_stage, project.latest_job_status)}
-              </span>
-            </Link>
-          </li>
-        ))}
-      </ul>
+      {BUCKET_ORDER.map((bucket) => {
+        const items = buckets.get(bucket) ?? [];
+        return (
+          <section
+            key={bucket}
+            className={styles.bucket}
+            aria-label={`${BUCKET_LABEL[bucket]}项目`}
+            data-testid={`bucket-${bucket}`}
+          >
+            <h2 className={styles.bucketTitle}>{BUCKET_LABEL[bucket]}</h2>
+            {items.length === 0 ? (
+              <p className={styles.bucketEmpty}>暂无</p>
+            ) : (
+              <ul className={styles.bucketList}>
+                {items.map((project) => (
+                  <li key={project.id} className={styles.item}>
+                    <Link
+                      to={`/projects/${project.id}`}
+                      className={styles.itemLink}
+                    >
+                      <span className={styles.itemTitle}>{project.title}</span>
+                      <span className={styles.itemTopic}>{project.topic}</span>
+                      <span className={styles.itemStatus}>
+                        {stageLabel(project.latest_stage, project.latest_job_status)}
+                      </span>
+                    </Link>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </section>
+        );
+      })}
     </main>
   );
 }

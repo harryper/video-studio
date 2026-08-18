@@ -14,7 +14,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { openEventStream } from "../api/client";
 import type { JobProgressEvent } from "../api/types";
-import { stageLabel } from "../labels";
+import { stageLabel, truncateMessage } from "../labels";
 
 import styles from "./JobProgress.module.css";
 
@@ -22,14 +22,6 @@ export interface JobProgressProps {
   projectId: string;
   onCancel?: (jobId: string) => void;
   onRetry?: (jobId: string) => void;
-}
-
-const ERROR_MESSAGE_LIMIT = 60;
-
-function truncateMessage(message: string | null | undefined): string | null {
-  if (!message) return null;
-  if (message.length <= ERROR_MESSAGE_LIMIT) return message;
-  return `${message.slice(0, ERROR_MESSAGE_LIMIT)}…`;
 }
 
 export function JobProgress({

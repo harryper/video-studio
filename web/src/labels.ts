@@ -15,7 +15,15 @@ export interface StageLabelOptions {
   errorMessage?: string | null;
 }
 
-const ERROR_MESSAGE_LIMIT = 60;
+export const ERROR_MESSAGE_LIMIT = 60;
+
+export function truncateMessage(
+  message: string | null | undefined,
+): string | null {
+  if (!message) return null;
+  if (message.length <= ERROR_MESSAGE_LIMIT) return message;
+  return `${message.slice(0, ERROR_MESSAGE_LIMIT)}…`;
+}
 
 const MAPPINGS: Record<string, Record<string, string>> = {
   diagnosis: {
@@ -53,12 +61,6 @@ const MAPPINGS: Record<string, Record<string, string>> = {
     running: "终审中",
   },
 };
-
-function truncateMessage(message: string | null | undefined): string | null {
-  if (!message) return null;
-  if (message.length <= ERROR_MESSAGE_LIMIT) return message;
-  return `${message.slice(0, ERROR_MESSAGE_LIMIT)}…`;
-}
 
 export function stageLabel(
   stage: string | null,
