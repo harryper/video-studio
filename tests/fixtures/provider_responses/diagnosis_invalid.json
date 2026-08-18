@@ -1,0 +1,13 @@
+{
+  "operation": "diagnosis",
+  "comment": "missing core_question; FakeModelProvider returns this verbatim but the model validator would reject it. The e2e harness stops on ModelProviderError so the API surfaces a clean failure.",
+  "responses": [
+    {
+      "audience_prior_knowledge": "观众已知",
+      "central_tension": "张力",
+      "misconceptions": [],
+      "scope": [],
+      "excluded_topics": []
+    }
+  ]
+}

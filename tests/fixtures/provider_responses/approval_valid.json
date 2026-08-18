@@ -1,0 +1,5 @@
+{
+  "operation": "approval",
+  "comment": "Approval stage has no model call; rewrite is a pure DAO. Fixture exists for symmetry with the harness's load_fixture() dispatcher.",
+  "responses": []
+}

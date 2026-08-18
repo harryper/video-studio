@@ -1,0 +1,73 @@
+{
+  "operation": "research",
+  "comment": "Two calls per build_research_packet: expand then classify. The 'research' queue is consulted twice in sequence.",
+  "responses": [
+    {
+      "candidate_facts": [
+        "西瓜含糖量约 6-8%",
+        "甘蔗含糖量约 13-15%",
+        "西瓜收获周期短，亩产约 3000 公斤",
+        "西瓜糖分主要为葡萄糖和果糖",
+        "1872 年挑战者号考察海洋盐度"
+      ],
+      "high_risk_claims": [
+        "西瓜含糖量约 6-8%",
+        "甘蔗含糖量约 13-15%",
+        "西瓜收获周期短，亩产约 3000 公斤"
+      ],
+      "mechanisms": [
+        "糖分含量直接决定原料出糖率",
+        "生长周期决定单位土地年产量",
+        "果糖葡萄糖比例影响结晶难度"
+      ],
+      "people_events": ["1872 年挑战者号考察"],
+      "concrete_scenes": ["甘蔗榨汁车间", "西瓜切面的水分"],
+      "visual_details": ["甘蔗横截面结晶", "西瓜汁滴落"],
+      "uncertainties": ["西瓜大田种植的精确经济成本"]
+    },
+    {
+      "classifications": [
+        {
+          "claim": "西瓜含糖量约 6-8%",
+          "risk": "number",
+          "softened_claim": null,
+          "confidence": 0.85,
+          "narrative_value": "直观对比甘蔗",
+          "payoff_critical": true
+        },
+        {
+          "claim": "甘蔗含糖量约 13-15%",
+          "risk": "number",
+          "softened_claim": null,
+          "confidence": 0.9,
+          "narrative_value": "对比基准",
+          "payoff_critical": true
+        },
+        {
+          "claim": "西瓜收获周期短，亩产约 3000 公斤",
+          "risk": "number",
+          "softened_claim": null,
+          "confidence": 0.7,
+          "narrative_value": "单位土地产量",
+          "payoff_critical": false
+        },
+        {
+          "claim": "西瓜糖分主要为葡萄糖和果糖",
+          "risk": "absolute",
+          "softened_claim": "西瓜糖分以葡萄糖和果糖为主",
+          "confidence": 0.6,
+          "narrative_value": "结晶难度",
+          "payoff_critical": false
+        },
+        {
+          "claim": "1872 年挑战者号考察海洋盐度",
+          "risk": "date",
+          "softened_claim": null,
+          "confidence": 0.7,
+          "narrative_value": "无关背景",
+          "payoff_critical": false
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "operation": "speech_metadata",
+  "comment": "Speech metadata is keyed by cue_id; the harness builds cues from the approved editorial text so the cue_id values are deterministic SHA1 hashes.",
+  "responses": [
+    {
+      "hints": []
+    }
+  ]
+}

@@ -12,5 +12,10 @@ export default defineConfig({
     environment: "jsdom",
     setupFiles: ["./src/test/setup.ts"],
     css: false,
+    // Playwright e2e specs live under ./e2e and use `@playwright/test`'s
+    // own `test()` runner — vitest must ignore the directory or it tries
+    // to load those files and fails with "Playwright Test did not expect
+    // test() to be called here".
+    exclude: ["**/node_modules/**", "**/dist/**", "e2e/**"],
   },
 });

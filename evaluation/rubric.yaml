@@ -1,0 +1,154 @@
+dimensions:
+  - id: "willing_to_continue"
+    name: "是否愿意继续听"
+    weight: 0.15
+    spec: "11.2.1"
+    description: "开头是否在前 30 秒内给出悬念，结尾是否留下未回答钩子"
+    scoring:
+      "1": "无悬念开头，结尾无钩子，纯陈述"
+      "2": "有结构但开头平铺直叙"
+      "3": "开头有钩子但收入信息密度低"
+      "4": "前后两段都有推进感，但缺少具体画面"
+      "5": "开头能立刻抓住注意力，结尾延展到其他场景"
+    auto_derivable_subset:
+      - ho_ok_in_first_paragraph
+      - tail_leaves_hook
+
+  - id: "investigation_question_clear"
+    name: "调查问题是否明确"
+    weight: 0.13
+    spec: "11.2.2"
+    description: "开头段落是否清晰说明本集要解答什么问题"
+    scoring:
+      "1": "没有明确调查问题"
+      "2": "问题模糊，与诊断阶段的核心问题不匹配"
+      "3": "有明确问题但与 pitch 不一致"
+      "4": "调查问题清晰，与 pitch 印证"
+      "5": "调查问题逐步收紧，结尾段再次提醒"
+    auto_derivable_subset:
+      - investigation_question_appears_in_first_paragraph
+      - consistency_with_pitch_set
+
+  - id: "each_paragraph_advances"
+    name: "每段是否推进发现"
+    weight: 0.13
+    spec: "11.2.3"
+    description: "每段是否释放新信息、推进叙事"
+    scoring:
+      "1": "存在重复段落或无信息段"
+      "2": "多数段落有信息，但部分段落只重复前文"
+      "3": "每段都有信息，但推进感弱"
+      "4": "段落有清晰信息梯度"
+      "5": "每一段都释放新信息并自然过渡到下一段"
+    auto_derivable_subset:
+      - paragraph_overlap_ratio
+      - new_information_density
+
+  - id: "explains_mechanism"
+    name: "是否真正解释清楚一个机制"
+    weight: 0.13
+    spec: "11.2.4"
+    description: "是否解释因果链路，而不是只罗列事实"
+    scoring:
+      "1": "只罗列事实，因果不清"
+      "2": "有因果但不完整"
+      "3": "解释了一个机制但收尾仓促"
+      "4": "机制解释完整，但缺少反例"
+      "5": "机制完整、有反例、有边界条件"
+    auto_derivable_subset:
+      - causal_chain_token_count
+      - fact_card_anchoring
+
+  - id: "canned_phrases_or_reversals"
+    name: "是否存在固定话术或强行反转"
+    weight: 0.10
+    spec: "11.2.5"
+    description: "是否出现套路化表达 ('你以为……其实……' 等) 或强行反转"
+    scoring:
+      "1": "出现 3 处以上套路化表达"
+      "2": "出现 1-2 处套路化表达"
+      "3": "没有套路化表达，但有强行反转"
+      "4": "没有套路化表达，反转自然"
+      "5": "无套路化表达，结构不依赖反转"
+    auto_derivable_subset:
+      - canned_phrase_hits
+      - forced_reversal_indicator
+
+  - id: "voice_of_person_with_judgment"
+    name: "是否像一个有判断的人在讲"
+    weight: 0.12
+    spec: "11.2.6"
+    description: "口吻是否体现思考过程，而非机械铺陈"
+    scoring:
+      "1": "纯陈述，无任何判断"
+      "2": "偶尔有判断但被事实淹没"
+      "3": "有判断但缺少依据"
+      "4": "每个判断都有事实支撑"
+      "5": "判断清晰、承认不确定性、敢下结论"
+    auto_derivable_subset:
+      - hedge_word_ratio
+      - judgement_phrase_count
+
+  - id: "core_facts_credible"
+    name: "核心事实是否可信"
+    weight: 0.12
+    spec: "11.2.7"
+    description: "事实是否经过验证、来源是否充分"
+    scoring:
+      "1": "存在未验证的核心事实"
+      "2": "核心事实有来源但不充足"
+      "3": "核心事实有来源"
+      "4": "核心事实有多个来源或权威来源"
+      "5": "核心事实有 2+ 权威来源，且无高风险未验证"
+    auto_derivable_subset:
+      - claim_verification_coverage
+      - high_risk_unverified_count
+
+  - id: "structure_novelty"
+    name: "是否与近期稿件结构重复"
+    weight: 0.12
+    spec: "11.2.8"
+    description: "与近期稿件相比，开头句法、过渡、揭示位置、结尾形态、对比模式是否重复"
+    scoring:
+      "1": "四项以上指纹与近期稿件高度相似"
+      "2": "3 项相似"
+      "3": "2 项相似"
+      "4": "1 项相似"
+      "5": "与近期稿件结构完全不同"
+    auto_derivable_subset:
+      - opening_syntax_similarity
+      - transition_distribution_similarity
+      - reveal_position_similarity
+      - ending_shape_similarity
+      - comparison_pattern_similarity
+      - misconception_correction_pattern_similarity
+
+acceptance_thresholds:
+  min_average_score: 3.5
+  max_canned_phrase_ratio: 0.10
+  min_three_pitch_difference_rate: 0.90
+  min_claim_verification_coverage: 1.0
+  min_protected_span_preservation_rate: 1.0
+  max_speech_plan_mutation_rate: 0.0
+
+canned_phrases:
+  - "你以为"
+  - "这就有意思了"
+  - "离谱的是"
+  - "说白了"
+  - "关键是"
+  - "没了"
+
+blind_randomization:
+  enabled: true
+  seed: 42
+  fields_to_mask:
+    - "topic"
+    - "category"
+  replacement_label_pool:
+    - "A"
+    - "B"
+    - "C"
+    - "D"
+    - "E"
+    - "F"

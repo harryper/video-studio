@@ -1,0 +1,30 @@
+{
+  "operation": "narrative",
+  "responses": [
+    {
+      "beats": [
+        {
+          "purpose": "setup",
+          "fact_card_ids": ["2"],
+          "new_information": "西瓜含糖量约 6-8%，甘蔗含糖量约 13-15%",
+          "next_question": "糖分够多就能制糖吗？",
+          "withheld_information": "成本账还没算"
+        },
+        {
+          "purpose": "evidence",
+          "fact_card_ids": ["3"],
+          "new_information": "西瓜收获周期短，亩产约 3000 公斤",
+          "next_question": "那么单位土地能出多少糖？",
+          "withheld_information": "糖分组成对结晶的影响"
+        },
+        {
+          "purpose": "payoff",
+          "fact_card_ids": ["1", "2"],
+          "new_information": "西瓜糖分以葡萄糖和果糖为主，结晶难度大，加上亩产差距，成本压不下来",
+          "next_question": "工业制糖为什么是甘蔗？",
+          "withheld_information": ""
+        }
+      ]
+    }
+  ]
+}

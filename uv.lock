@@ -106,6 +106,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
+    { name = "pyyaml" },
     { name = "sqlalchemy" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -124,6 +125,7 @@ requires-dist = [
     { name = "fastapi", specifier = "==0.141.1" },
     { name = "pydantic", specifier = ">=2.11,<2.12" },
     { name = "pydantic-settings", specifier = ">=2.7,<3" },
+    { name = "pyyaml", specifier = ">=6.0,<7" },
     { name = "sqlalchemy", specifier = "==2.0.51" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34,<1" },
 ]

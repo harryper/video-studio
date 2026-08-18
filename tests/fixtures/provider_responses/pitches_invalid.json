@@ -1,0 +1,33 @@
+{
+  "operation": "pitches",
+  "comment": "All three drafts share the same signature — the service handles the collision by appending '备选视角 N' suffixes, so the result still has 3 distinct pitches but is otherwise degraded.",
+  "responses": [
+    {
+      "investigation_question": "西瓜制糖为什么没成？",
+      "opening_scene": "糖厂",
+      "evidence_path": "含糖量对比",
+      "payoff": "成本账",
+      "why_it_works": "数据",
+      "estimated_duration_sec": 180,
+      "risks": []
+    },
+    {
+      "investigation_question": "西瓜制糖为何没成？",
+      "opening_scene": "糖厂",
+      "evidence_path": "含糖量对比",
+      "payoff": "成本账",
+      "why_it_works": "数据",
+      "estimated_duration_sec": 180,
+      "risks": []
+    },
+    {
+      "investigation_question": "西瓜制糖为什么没成？",
+      "opening_scene": "糖厂",
+      "evidence_path": "含糖量对比",
+      "payoff": "成本账",
+      "why_it_works": "数据",
+      "estimated_duration_sec": 180,
+      "risks": []
+    }
+  ]
+}

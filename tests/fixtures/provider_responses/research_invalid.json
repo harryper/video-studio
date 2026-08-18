@@ -1,0 +1,18 @@
+{
+  "operation": "research",
+  "comment": "expand returns zero candidate_facts — finalize() will reject because no payoff-critical card can be created.",
+  "responses": [
+    {
+      "candidate_facts": [],
+      "high_risk_claims": [],
+      "mechanisms": ["无"],
+      "people_events": [],
+      "concrete_scenes": [],
+      "visual_details": [],
+      "uncertainties": ["全部不确定"]
+    },
+    {
+      "classifications": []
+    }
+  ]
+}

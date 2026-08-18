@@ -1,0 +1,14 @@
+{
+  "operation": "rewrite",
+  "comment": "Only the paragraphs that carry an ai_action='rewrite' comment are sent. Each rewrite removes the protected span [start_offset, end_offset) from the original before re-emitting; the test fixture is structured so the protected span is preserved in the rewritten text.",
+  "responses": [
+    {
+      "paragraphs": [
+        {
+          "paragraph_id": "b2",
+          "text": "甜不在含糖量。甘蔗榨出 13 度的糖浆，西瓜榨出 7 度的汁。除了糖分差一倍，糖本身的结构也挑工艺。西瓜的收获周期短，亩产约 3000 公斤，新工艺也许能让亩产填平糖分差距。"
+        }
+      ]
+    }
+  ]
+}

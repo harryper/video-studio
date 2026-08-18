@@ -1,0 +1,13 @@
+{
+  "operation": "diagnosis",
+  "responses": [
+    {
+      "core_question": "西瓜为什么不用来制糖？",
+      "audience_prior_knowledge": "普通观众，能想到甜菜甘蔗制糖，不熟悉西瓜成分",
+      "central_tension": "西瓜很甜但糖业从未把西瓜当原料",
+      "misconceptions": ["西瓜很甜所以可以用来制糖", "西瓜的糖分和甘蔗接近"],
+      "scope": ["西瓜含糖量", "西瓜糖分组成", "西瓜种植成本"],
+      "excluded_topics": ["西瓜品种育种", "西瓜保鲜运输"]
+    }
+  ]
+}

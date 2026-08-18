@@ -1,0 +1,14 @@
+{
+  "operation": "rewrite",
+  "comment": "Drops the protected span verbatim — ReviewService._validate_rewrite_output raises ProtectedSpanViolation.",
+  "responses": [
+    {
+      "paragraphs": [
+        {
+          "paragraph_id": "b2",
+          "text": "这是改写后的段。"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "operation": "narrative",
+  "comment": "Only 2 beats and no fact_card_ids — NarrativeService.finalize() raises AntiTemplateViolation.",
+  "responses": [
+    {
+      "beats": [
+        {
+          "purpose": "setup",
+          "fact_card_ids": [],
+          "new_information": "一段",
+          "next_question": "下一段？",
+          "withheld_information": ""
+        },
+        {
+          "purpose": "payoff",
+          "fact_card_ids": [],
+          "new_information": "二段",
+          "next_question": "",
+          "withheld_information": ""
+        }
+      ]
+    }
+  ]
+}

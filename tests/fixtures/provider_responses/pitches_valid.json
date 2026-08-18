@@ -1,0 +1,33 @@
+{
+  "operation": "pitches",
+  "comment": "Three sequentially-consumed responses per PITCH_COUNT=3; collision retries have no equivalent here because each draft has a distinct (investigation_question, evidence_path) signature.",
+  "responses": [
+    {
+      "investigation_question": "西瓜的糖分组成为什么不适合结晶制糖？",
+      "opening_scene": "糖厂结晶罐里糖浆慢慢凝固",
+      "evidence_path": "从西瓜含糖量到糖分组成再到结晶原理",
+      "payoff": "理解糖业为什么选了甘蔗而不是西瓜",
+      "why_it_works": "把日常水果和工业制糖并列",
+      "estimated_duration_sec": 180,
+      "risks": ["数据密度需要场景化"]
+    },
+    {
+      "investigation_question": "西瓜的亩产能否弥补单位糖分不足？",
+      "opening_scene": "西瓜田里堆满刚摘的瓜",
+      "evidence_path": "从甘蔗单产到西瓜单产再到经济模型",
+      "payoff": "明白成本账比含糖量更关键",
+      "why_it_works": "经济学角度切入",
+      "estimated_duration_sec": 180,
+      "risks": ["避免变成农业科普"]
+    },
+    {
+      "investigation_question": "如果一定要用西瓜制糖，工艺上卡在哪？",
+      "opening_scene": "实验室里把西瓜榨汁后倒入蒸发皿",
+      "evidence_path": "从果糖葡萄糖比例到结晶再到提纯",
+      "payoff": "理解糖的工业流程对原料的挑剔",
+      "why_it_works": "实验视角",
+      "estimated_duration_sec": 180,
+      "risks": ["实验画面需要真实素材"]
+    }
+  ]
+}

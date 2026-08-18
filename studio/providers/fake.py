@@ -4,12 +4,19 @@ The fixture queue is consumed in order: :meth:`FakeModelProvider.generate`
 returns the head of the list (a deep copy) and removes it from the queue.
 Once a queue is empty, calls raise :class:`ModelProviderError` naming the
 operation so the gap is easy to spot in test failures.
+
+The returned object is validated against the requested ``schema`` so the
+caller gets a Pydantic model instance (the same shape the real providers
+return after their parse step). This means the fixture file can hold a
+plain dict — the JSON-typed contract is enforced here.
 """
 
 from __future__ import annotations
 
 import copy
 import logging
+from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -29,10 +36,26 @@ class FakeModelProvider(ModelProvider[BaseModel]):
             for operation, items in responses.items():
                 self.responses[operation] = list(items)
 
-    def queue(self, operation: str, *items: BaseModel) -> None:
+    def queue(self, operation: str, *items: Any) -> None:
         """Append ``items`` to the queue for ``operation``."""
 
         self.responses.setdefault(operation, []).extend(items)
+
+    def record(self, path: str | Path, operation: str) -> None:
+        """Load a JSON fixture file and queue its ``responses`` for ``operation``.
+
+        The fixture is a JSON object with a ``"responses"`` list — each
+        entry is queued in order so the next ``generate(operation=...)``
+        returns the next item. See ``tests/fixtures/provider_responses/``
+        for the recorded valid + invalid fixtures.
+        """
+
+        import json
+
+        with open(path, encoding="utf-8") as fh:
+            payload = json.load(fh)
+        responses = payload.get("responses", [])
+        self.responses.setdefault(operation, []).extend(responses)
 
     def generate(
         self,
@@ -51,7 +74,12 @@ class FakeModelProvider(ModelProvider[BaseModel]):
                 f"FakeModelProvider has no fixture queued for operation {operation!r}"
             )
         fixture = queue.pop(0)
-        return copy.deepcopy(fixture)
+        if isinstance(fixture, BaseModel):
+            return copy.deepcopy(fixture)
+        # Validate the dict against the requested schema so the caller
+        # gets a typed model instance (the same shape the real
+        # providers hand back after their parse step).
+        return schema.model_validate(fixture)
 
 
 __all__ = ["FakeModelProvider"]

@@ -1,0 +1,19 @@
+{
+  "operation": "draft",
+  "comment": "Contains a banned phrase ('说白了') — DraftService.finalize() raises AntiTemplateViolation.",
+  "responses": [
+    {
+      "paragraphs": [
+        {
+          "text": "西瓜切开的时候，汁水从刀口淌下来，看起来糖分好像很足。"
+        },
+        {
+          "text": "说白了，糖业选择甘蔗不是因为甘蔗更甜，而是因为甘蔗更好结晶。"
+        },
+        {
+          "text": "西瓜的糖是葡萄糖和果糖，结晶难度高。"
+        }
+      ]
+    }
+  ]
+}
