@@ -4,16 +4,18 @@ import userEvent from "@testing-library/user-event";
 
 import type { ProjectSummary } from "../api/types";
 
-const { listProjectsMock, createProjectMock } = vi.hoisted(() => {
+const { listProjectsMock, createProjectMock, listArtifactsMock } = vi.hoisted(() => {
   return {
     listProjectsMock: vi.fn(),
     createProjectMock: vi.fn(),
+    listArtifactsMock: vi.fn(),
   };
 });
 
 vi.mock("../api/client", () => ({
   listProjects: listProjectsMock,
   createProject: createProjectMock,
+  listArtifacts: listArtifactsMock,
 }));
 
 vi.mock("../router", () => ({
@@ -106,6 +108,8 @@ describe("ProjectsPage", () => {
   beforeEach(() => {
     listProjectsMock.mockReset();
     createProjectMock.mockReset();
+    listArtifactsMock.mockReset();
+    listArtifactsMock.mockResolvedValue([]);
   });
 
   it("renders project with editorial label inside the awaiting-pitch bucket", async () => {
@@ -170,11 +174,32 @@ describe("ProjectsPage", () => {
     expect(completed.getByText("完成项目")).toBeVisible();
   });
 
-  it("navigates to workspace on row click", async () => {
+  it("rows in the awaiting-pitch bucket link directly to the pitch gate", async () => {
     listProjectsMock.mockResolvedValue([AWAITING_PITCH_PROJECT]);
     render(<ProjectsPage />);
     const link = await screen.findByRole("link", { name: /台风科普/ });
-    expect(link).toHaveAttribute("href", "/projects/p1");
+    expect(link).toHaveAttribute("href", "/projects/p1/pitches");
+  });
+
+  it("rows in awaiting-review / finalized buckets link to the draft head", async () => {
+    listArtifactsMock.mockResolvedValue([
+      {
+        id: "draft-head",
+        kind: "draft",
+        revision: 1,
+        parent_id: null,
+        created_at: "2026-08-05T00:00:00Z",
+        accepted_at: "2026-08-05T01:00:00Z",
+        is_head: true,
+        payload: null,
+      },
+    ]);
+    listProjectsMock.mockResolvedValue([AWAITING_REVIEW_PROJECT, FINALIZED_PROJECT]);
+    render(<ProjectsPage />);
+    const reviewLink = await screen.findByRole("link", { name: /海洋之声/ });
+    expect(reviewLink).toHaveAttribute("href", "/projects/p2/drafts/draft-head");
+    const finalizedLink = screen.getByRole("link", { name: /已定稿项目/ });
+    expect(finalizedLink).toHaveAttribute("href", "/projects/p-finalized/drafts/draft-head");
   });
 
   describe("new-project form (collapsed advanced)", () => {

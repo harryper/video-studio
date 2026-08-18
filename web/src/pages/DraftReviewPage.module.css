@@ -1,0 +1,245 @@
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 1.5rem 1rem 5rem;
+}
+
+.breadcrumb {
+  font-size: 0.9rem;
+}
+
+.header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.title {
+  margin: 0;
+  font-size: 1.5rem;
+}
+
+.subtitle {
+  margin: 0;
+  color: var(--cs-text-muted, #71717a);
+}
+
+.layout {
+  display: grid;
+  gap: 1rem;
+}
+
+.desktop {
+  grid-template-columns: minmax(220px, 1fr) minmax(0, 2fr) minmax(280px, 1fr);
+}
+
+.roadmap,
+.text,
+.comments {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem;
+  border: 1px solid var(--cs-border, #d4d4d8);
+  border-radius: 0.75rem;
+  background: var(--cs-surface, #fff);
+}
+
+.paneHeading {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.beats {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.beat,
+.beatActive {
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--cs-border, #d4d4d8);
+  border-radius: 0.5rem;
+  font-size: 0.9rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.beatActive {
+  border-color: var(--cs-accent, #2563eb);
+  background: var(--cs-accent-soft, #eff6ff);
+}
+
+.beatId {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  color: var(--cs-text-muted, #71717a);
+}
+
+.beatPurpose {
+  font-weight: 600;
+}
+
+.beatNewInfo {
+  margin: 0;
+  color: var(--cs-text-muted, #71717a);
+}
+
+.info {
+  margin: 0;
+  color: var(--cs-text-muted, #71717a);
+}
+
+.error {
+  margin: 0;
+  color: var(--cs-danger, #b91c1c);
+}
+
+.acceptedNotice {
+  margin: 0;
+  color: var(--cs-success-accent, #16a34a);
+  font-size: 0.9rem;
+}
+
+.conflict {
+  border: 1px solid var(--cs-danger, #b91c1c);
+  border-radius: 0.5rem;
+  padding: 0.75rem 1rem;
+  background: var(--cs-danger-bg, #fee2e2);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.conflictTitle {
+  margin: 0;
+  font-size: 1rem;
+  color: var(--cs-danger, #b91c1c);
+}
+
+.conflictBody {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 0.75rem;
+}
+
+.conflictCol {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.conflictText {
+  margin: 0;
+  padding: 0.5rem;
+  border: 1px solid var(--cs-border, #d4d4d8);
+  border-radius: 0.5rem;
+  font-size: 0.9rem;
+  background: var(--cs-surface, #fff);
+}
+
+.mobile {
+  grid-template-columns: 1fr;
+}
+
+.mobile [data-pane="roadmap"],
+.mobile [data-pane="comments"] {
+  display: none;
+}
+
+.mobile[data-tab="roadmap"] [data-pane="roadmap"],
+.mobile[data-tab="comments"] [data-pane="comments"] {
+  display: flex;
+}
+
+.tabBar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  background: var(--cs-surface, #fff);
+  border-top: 1px solid var(--cs-border, #d4d4d8);
+}
+
+.tab,
+.tabActive {
+  flex: 1;
+  padding: 0.75rem;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  font-size: 0.9rem;
+}
+
+.tabActive {
+  background: var(--cs-accent-soft, #eff6ff);
+  color: var(--cs-accent, #2563eb);
+  font-weight: 600;
+}
+
+.tab:focus-visible,
+.tabActive:focus-visible {
+  outline: 2px solid var(--cs-accent, #2563eb);
+  outline-offset: -2px;
+}
+
+.modalBackdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  z-index: 50;
+}
+
+.modal {
+  background: var(--cs-surface, #fff);
+  border-radius: 0.75rem;
+  padding: 1.25rem;
+  width: 100%;
+  max-width: 28rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.modalTitle {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.modalList {
+  margin: 0;
+  padding-left: 1.25rem;
+}
+
+.modalActions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.primary {
+  padding: 0.5rem 1rem;
+  background: var(--cs-accent, #2563eb);
+  color: #fff;
+  border: none;
+  border-radius: 0.5rem;
+  cursor: pointer;
+}
+
+@media (max-width: 768px) {
+  .desktop {
+    grid-template-columns: 1fr;
+  }
+}

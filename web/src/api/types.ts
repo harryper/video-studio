@@ -51,6 +51,119 @@ export interface ArtifactHistoryEntry {
   created_at: string;
   accepted_at: string | null;
   is_head: boolean;
+  payload?: unknown;
+}
+
+// ---------------------------------------------------------------------------
+// Task 12 — editorial review wire types (mirror studio/schemas.py)
+// ---------------------------------------------------------------------------
+
+export interface StoryPitch {
+  id: string;
+  investigation_question: string;
+  opening_scene: string;
+  evidence_path: string;
+  payoff: string;
+  why_it_works: string;
+  estimated_duration_sec: number;
+  risks: string[];
+}
+
+export interface StoryPitchSet {
+  payload_kind: "pitch_set";
+  id: string;
+  pitches: StoryPitch[];
+  parent_set_id: string | null;
+  feedback: string | null;
+  created_at: string;
+}
+
+export interface SourceDocument {
+  title: string;
+  url: string;
+  snippet: string;
+  publisher: string;
+  published_at: string | null;
+}
+
+export interface FactCard {
+  claim: string;
+  narrative_value: string;
+  confidence: number;
+  risk: "number" | "date" | "superlative" | "absolute" | "ordinary";
+  sources: SourceDocument[];
+  verification_status: "verified" | "softened" | "dropped" | "unverified";
+  payoff_critical: boolean;
+}
+
+export interface ResearchPacket {
+  mechanisms: string[];
+  fact_cards: FactCard[];
+  people_events: string[];
+  concrete_scenes: string[];
+  visual_details: string[];
+  uncertainties: string[];
+  sources: SourceDocument[];
+}
+
+export interface NarrativeBeat {
+  id: string;
+  purpose: string;
+  fact_card_ids: string[];
+  new_information: string;
+  next_question: string;
+  withheld_information: string;
+}
+
+export interface NarrativePlan {
+  payload_kind: "narrative_plan";
+  id: string;
+  pitch_id: string;
+  beats: NarrativeBeat[];
+  created_at: string;
+}
+
+export interface DraftParagraph {
+  id: string;
+  text: string;
+}
+
+export interface DraftRevision {
+  payload_kind: "draft";
+  id: string;
+  narrative_plan_id: string;
+  paragraphs: DraftParagraph[];
+  editorial_text: string;
+  parent_id: string | null;
+  change_source: string;
+  author_note: string;
+  created_at: string;
+}
+
+export interface EditorialComment {
+  id: string;
+  draft_artifact_id: string;
+  paragraph_id: string;
+  start_offset: number;
+  end_offset: number;
+  kind: string;
+  body: string;
+  ai_action: "rewrite" | "note" | "none";
+  processed_in_revision: string | null;
+  created_at: string;
+}
+
+export interface CreateCommentInput {
+  paragraph_id: string;
+  start_offset: number;
+  end_offset: number;
+  kind: string;
+  body: string;
+  ai_action: "rewrite" | "note" | "none";
+}
+
+export interface AcceptPitchInput {
+  edited_pitch?: StoryPitch;
 }
 
 export interface JobProgressEvent {

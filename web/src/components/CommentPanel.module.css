@@ -1,0 +1,121 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+
+.heading {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.empty {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--cs-text-muted, #71717a);
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.groupTitle {
+  margin: 0;
+  font-size: 0.9rem;
+  color: var(--cs-text-muted, #71717a);
+}
+
+.commentList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.comment {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--cs-border, #d4d4d8);
+  border-radius: 0.5rem;
+  background: var(--cs-surface, #fff);
+  font-size: 0.9rem;
+}
+
+.badgeRewrite {
+  background: var(--cs-accent-soft, #eff6ff);
+  color: var(--cs-accent, #2563eb);
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+}
+
+.badgeNote {
+  background: var(--cs-marker-bg, #e4e4e7);
+  color: var(--cs-text-muted, #71717a);
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+}
+
+.commentBody {
+  flex: 1 1 auto;
+}
+
+.commentMeta {
+  color: var(--cs-text-muted, #71717a);
+  font-size: 0.8rem;
+}
+
+.preview {
+  margin: 0 0 0.25rem;
+  font-size: 0.9rem;
+}
+
+.previewButton {
+  padding: 0.5rem 1rem;
+  background: var(--cs-accent, #2563eb);
+  color: #fff;
+  border: none;
+  border-radius: 0.5rem;
+  cursor: pointer;
+}
+
+.previewButton:focus-visible {
+  outline: 2px solid var(--cs-accent-strong, #1d4ed8);
+  outline-offset: 2px;
+}
+
+.hint {
+  margin: 0 0 0.5rem;
+  font-size: 0.85rem;
+  color: var(--cs-text-muted, #71717a);
+}
+
+.reopen {
+  padding: 0.5rem 1rem;
+  background: transparent;
+  border: 1px solid var(--cs-border, #d4d4d8);
+  border-radius: 0.5rem;
+  cursor: pointer;
+}
+
+.reopen:focus-visible {
+  outline: 2px solid var(--cs-accent, #2563eb);
+  outline-offset: 2px;
+}

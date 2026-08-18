@@ -1,0 +1,119 @@
+.editor {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.hint {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--cs-text-muted, #71717a);
+}
+
+.paragraphBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.paragraph {
+  position: relative;
+  margin: 0;
+  padding: 0.75rem 1rem;
+  border: 1px solid var(--cs-border, #d4d4d8);
+  border-radius: 0.5rem;
+  background: var(--cs-surface, #fff);
+  line-height: 1.6;
+}
+
+.addButton {
+  position: absolute;
+  top: 0.25rem;
+  right: 0.5rem;
+  background: transparent;
+  border: 1px solid var(--cs-border, #d4d4d8);
+  border-radius: 999px;
+  font-size: 0.8rem;
+  padding: 0.15rem 0.5rem;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms ease-in;
+}
+
+.paragraph:hover .addButton,
+.paragraph:focus-within .addButton {
+  opacity: 1;
+}
+
+.addButton:focus-visible {
+  outline: 2px solid var(--cs-accent, #2563eb);
+  outline-offset: 2px;
+  opacity: 1;
+}
+
+.commentForm {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border: 1px dashed var(--cs-border, #d4d4d8);
+  border-radius: 0.5rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.field textarea {
+  padding: 0.5rem;
+  border: 1px solid var(--cs-border, #d4d4d8);
+  border-radius: 0.5rem;
+  font-family: inherit;
+  font-size: 0.95rem;
+  resize: vertical;
+}
+
+.field textarea:focus-visible {
+  outline: 2px solid var(--cs-accent, #2563eb);
+  outline-offset: 2px;
+}
+
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+}
+
+.range {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--cs-text-muted, #71717a);
+}
+
+.formError {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--cs-danger, #b91c1c);
+}
+
+.formActions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.primary {
+  padding: 0.5rem 1rem;
+  background: var(--cs-accent, #2563eb);
+  color: #fff;
+  border: none;
+  border-radius: 0.5rem;
+  cursor: pointer;
+}
+
+.primary:focus-visible {
+  outline: 2px solid var(--cs-accent-strong, #1d4ed8);
+  outline-offset: 2px;
+}

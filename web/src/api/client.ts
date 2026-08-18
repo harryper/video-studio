@@ -12,9 +12,12 @@
  */
 
 import type {
+  AcceptPitchInput,
   ApiError,
   ArtifactHistoryEntry,
+  CreateCommentInput,
   CreateProjectInput,
+  EditorialComment,
   EventStreamHandlers,
   JobMutation,
   JobProgressEvent,
@@ -22,6 +25,7 @@ import type {
   ProjectCreated,
   ProjectListFilters,
   ProjectSummary,
+  StoryPitchSet,
 } from "./types";
 
 const DEFAULT_BASE = "/api";
@@ -130,6 +134,95 @@ export function retryJob(projectId: string, jobId: string): Promise<JobMutation>
 export function cancelJob(projectId: string, jobId: string): Promise<JobMutation> {
   return request<JobMutation>(
     `/projects/${encodeURIComponent(projectId)}/jobs/${encodeURIComponent(jobId)}/cancel`,
+    { method: "POST", csrf: true },
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Task 12 — pitch + draft review endpoints
+// ---------------------------------------------------------------------------
+
+export function getPitches(projectId: string): Promise<StoryPitchSet> {
+  return request<StoryPitchSet>(
+    `/projects/${encodeURIComponent(projectId)}/pitches`,
+  );
+}
+
+export function generatePitches(projectId: string): Promise<{ job_id: string }> {
+  return request<{ job_id: string }>(
+    `/projects/${encodeURIComponent(projectId)}/pitches/generate`,
+    { method: "POST", csrf: true },
+  );
+}
+
+export function acceptPitch(
+  projectId: string,
+  pitchId: string,
+  input: AcceptPitchInput = {},
+): Promise<{ artifact_id: string; job_id: string }> {
+  return request<{ artifact_id: string; job_id: string }>(
+    `/projects/${encodeURIComponent(projectId)}/pitches/${encodeURIComponent(pitchId)}/accept`,
+    { method: "POST", body: input, csrf: true },
+  );
+}
+
+export function reopenPitches(
+  projectId: string,
+  invalidates: string | null,
+): Promise<{ invalidated: string[] }> {
+  const headers: Record<string, string> = {};
+  if (invalidates !== null) headers["X-Confirm-Invalidates"] = invalidates;
+  return request<{ invalidated: string[] }>(
+    `/projects/${encodeURIComponent(projectId)}/pitch/reopen`,
+    { method: "POST", csrf: true, headers },
+  );
+}
+
+export function regeneratePitches(
+  projectId: string,
+): Promise<{ job_id: string }> {
+  return request<{ job_id: string }>(
+    `/projects/${encodeURIComponent(projectId)}/pitch/regenerate`,
+    { method: "POST", csrf: true },
+  );
+}
+
+export function listComments(
+  projectId: string,
+  draftArtifactId: string,
+): Promise<EditorialComment[]> {
+  return request<EditorialComment[]>(
+    `/projects/${encodeURIComponent(projectId)}/drafts/${encodeURIComponent(draftArtifactId)}/comments`,
+  );
+}
+
+export function postComment(
+  projectId: string,
+  draftArtifactId: string,
+  input: CreateCommentInput,
+): Promise<EditorialComment> {
+  return request<EditorialComment>(
+    `/projects/${encodeURIComponent(projectId)}/drafts/${encodeURIComponent(draftArtifactId)}/comments`,
+    { method: "POST", body: input, csrf: true },
+  );
+}
+
+export function triggerRewrite(
+  projectId: string,
+  draftArtifactId: string,
+): Promise<{ artifact_id: string }> {
+  return request<{ artifact_id: string }>(
+    `/projects/${encodeURIComponent(projectId)}/drafts/${encodeURIComponent(draftArtifactId)}/rewrite`,
+    { method: "POST", csrf: true },
+  );
+}
+
+export function approveDraft(
+  projectId: string,
+  draftArtifactId: string,
+): Promise<{ artifact_id: string }> {
+  return request<{ artifact_id: string }>(
+    `/projects/${encodeURIComponent(projectId)}/drafts/${encodeURIComponent(draftArtifactId)}/approve`,
     { method: "POST", csrf: true },
   );
 }

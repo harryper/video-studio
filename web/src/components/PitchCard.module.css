@@ -1,0 +1,107 @@
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem;
+  border: 1px solid var(--cs-border, #d4d4d8);
+  border-radius: 0.75rem;
+  background: var(--cs-surface, #fff);
+  height: 100%;
+}
+
+.title {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.fields {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 0.75rem;
+  row-gap: 0.5rem;
+  margin: 0;
+  font-size: 0.9rem;
+}
+
+.fields dt {
+  font-weight: 600;
+  color: var(--cs-text-muted, #71717a);
+}
+
+.fields dd {
+  margin: 0;
+}
+
+.risks {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.risksLabel {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--cs-text-muted, #71717a);
+}
+
+.risksList {
+  margin: 0;
+  padding-left: 1.25rem;
+  font-size: 0.9rem;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-top: auto;
+}
+
+.primary {
+  padding: 0.45rem 0.9rem;
+  background: var(--cs-accent, #2563eb);
+  color: #fff;
+  border: none;
+  border-radius: 0.5rem;
+  cursor: pointer;
+}
+
+.primary:focus-visible {
+  outline: 2px solid var(--cs-accent-strong, #1d4ed8);
+  outline-offset: 2px;
+}
+
+.disabled {
+  background: transparent;
+  border: 1px dashed var(--cs-border, #d4d4d8);
+  color: var(--cs-text-muted, #71717a);
+  padding: 0.45rem 0.9rem;
+  border-radius: 0.5rem;
+  cursor: not-allowed;
+}
+
+.editForm {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.field textarea {
+  padding: 0.5rem;
+  border: 1px solid var(--cs-border, #d4d4d8);
+  border-radius: 0.5rem;
+  font-family: inherit;
+  font-size: 0.95rem;
+  resize: vertical;
+}
+
+.field textarea:focus-visible {
+  outline: 2px solid var(--cs-accent, #2563eb);
+  outline-offset: 2px;
+}

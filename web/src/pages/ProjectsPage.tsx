@@ -13,8 +13,12 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 
-import { createProject, listProjects } from "../api/client";
-import type { CreateProjectInput, ProjectSummary } from "../api/types";
+import { createProject, listArtifacts, listProjects } from "../api/client";
+import type {
+  ArtifactHistoryEntry,
+  CreateProjectInput,
+  ProjectSummary,
+} from "../api/types";
 import {
   BUCKET_LABEL,
   BUCKET_ORDER,
@@ -37,6 +41,7 @@ function deriveTitle(topic: string): string {
 
 export function ProjectsPage(): React.ReactElement {
   const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [draftHeads, setDraftHeads] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -51,6 +56,25 @@ export function ProjectsPage(): React.ReactElement {
     try {
       const data = await listProjects();
       setProjects(data);
+      // Spec §10.3/§10.4 — link awaiting_review / finalized buckets to
+      // the draft head; the dashboard can't render the deep-link without
+      // fetching each project's artifact history. Keep this best-effort:
+      // if any individual fetch fails, fall back to the workspace link.
+      const heads: Record<string, string> = {};
+      await Promise.all(
+        data.map(async (project) => {
+          try {
+            const artifacts = await listArtifacts(project.id);
+            const draftHead = artifacts
+              .filter((entry: ArtifactHistoryEntry) => entry.kind === "draft" && entry.is_head)
+              .map((entry) => entry.id)[0];
+            if (draftHead) heads[project.id] = draftHead;
+          } catch {
+            // ignore — the row will fall back to the workspace link
+          }
+        }),
+      );
+      setDraftHeads(heads);
     } catch (err) {
       setError(errorMessage(err));
     } finally {
@@ -61,6 +85,19 @@ export function ProjectsPage(): React.ReactElement {
   useEffect(() => {
     void refresh();
   }, [refresh]);
+
+  const rowHref = useCallback(
+    (project: ProjectSummary): string => {
+      const bucket = categorizeProject(project);
+      if (bucket === "awaiting_pitch") return `/projects/${project.id}/pitches`;
+      const draftHead = draftHeads[project.id];
+      if ((bucket === "awaiting_review" || bucket === "finalized") && draftHead) {
+        return `/projects/${project.id}/drafts/${draftHead}`;
+      }
+      return `/projects/${project.id}`;
+    },
+    [draftHeads],
+  );
 
   const buckets = useMemo<Map<BucketName, ProjectSummary[]>>(() => {
     const grouped = new Map<BucketName, ProjectSummary[]>();
@@ -183,7 +220,7 @@ export function ProjectsPage(): React.ReactElement {
                 {items.map((project) => (
                   <li key={project.id} className={styles.item}>
                     <Link
-                      to={`/projects/${project.id}`}
+                      to={rowHref(project)}
                       className={styles.itemLink}
                     >
                       <span className={styles.itemTitle}>{project.title}</span>

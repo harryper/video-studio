@@ -1,0 +1,177 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 1rem;
+  border: 1px solid var(--cs-border, #d4d4d8);
+  border-radius: 0.75rem;
+  background: var(--cs-surface, #fff);
+}
+
+.heading {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.summary {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--cs-text-muted, #71717a);
+}
+
+.empty {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--cs-text-muted, #71717a);
+}
+
+.list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.entry {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border: 1px solid var(--cs-border, #d4d4d8);
+  border-radius: 0.5rem;
+}
+
+.entryHeader {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.paragraphId {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+  color: var(--cs-text-muted, #71717a);
+}
+
+.badgeModified {
+  background: var(--cs-accent-soft, #eff6ff);
+  color: var(--cs-accent, #2563eb);
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+}
+
+.badgeAdded {
+  background: var(--cs-success-bg, #ecfdf5);
+  color: var(--cs-success-accent, #16a34a);
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+}
+
+.badgeRemoved {
+  background: var(--cs-danger-bg, #fee2e2);
+  color: var(--cs-danger, #b91c1c);
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+}
+
+.body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.5rem;
+}
+
+.col {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.9rem;
+}
+
+.colLabel {
+  font-size: 0.8rem;
+  color: var(--cs-text-muted, #71717a);
+}
+
+.before {
+  margin: 0;
+  padding: 0.5rem;
+  border: 1px solid var(--cs-border, #d4d4d8);
+  border-radius: 0.5rem;
+  background: var(--cs-surface-muted, #f4f4f5);
+  white-space: pre-wrap;
+}
+
+.after {
+  margin: 0;
+  padding: 0.5rem;
+  border: 1px solid var(--cs-accent, #2563eb);
+  border-radius: 0.5rem;
+  background: var(--cs-accent-soft, #eff6ff);
+  white-space: pre-wrap;
+}
+
+.acceptLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+}
+
+.acceptToggleOn,
+.acceptToggleOff {
+  align-self: flex-start;
+  padding: 0.3rem 0.7rem;
+  font-size: 0.85rem;
+  border-radius: 0.5rem;
+  cursor: pointer;
+}
+
+.acceptToggleOn {
+  background: var(--cs-success-bg, #ecfdf5);
+  color: var(--cs-success-accent, #16a34a);
+  border: 1px solid var(--cs-success-accent, #16a34a);
+}
+
+.acceptToggleOff {
+  background: transparent;
+  color: var(--cs-text-muted, #71717a);
+  border: 1px solid var(--cs-border, #d4d4d8);
+}
+
+.actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.accept {
+  padding: 0.5rem 1rem;
+  background: var(--cs-accent, #2563eb);
+  color: #fff;
+  border: none;
+  border-radius: 0.5rem;
+  cursor: pointer;
+}
+
+.accept:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.discard {
+  padding: 0.5rem 1rem;
+  background: transparent;
+  border: 1px solid var(--cs-border, #d4d4d8);
+  border-radius: 0.5rem;
+  cursor: pointer;
+}
+
+.banner {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--cs-text-muted, #71717a);
+}
