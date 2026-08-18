@@ -311,6 +311,53 @@ def test_provider_raises_when_repair_still_fails() -> None:
     assert client.call_count == 2
 
 
+def test_anthropic_provider_repairs_inner_quotes_in_strings() -> None:
+    """Common LLM failure: nested ASCII ``"..."`` inside a string value.
+
+    Real Anthropic responses often contain Chinese phrases wrapped in
+    ASCII double-quotes inside ``narrative_value`` etc. Without repair
+    ``json.loads`` rejects the payload. The provider must accept the
+    response after replacing the inner quotes with ``「」``.
+    """
+
+    # Plain JSON (no markdown fence) with two inner quotes inside a string.
+    bad = (
+        '{"core_question":"x",'
+        '"audience_prior_knowledge":"让观众了解"糖"的历史",'
+        '"central_tension":"y",'
+        '"misconceptions":["m"],'
+        '"scope":["s"],'
+        '"excluded_topics":["e"]}'
+    )
+    client = FakeAnthropic([_message(bad)])
+    provider = AnthropicProvider(client=client)
+    result = provider.generate(
+        TopicDiagnosis, "system", "prompt", operation="diagnosis"
+    )
+    assert result.audience_prior_knowledge == "让观众了解「糖」的历史"
+    assert client.call_count == 1
+
+
+def test_anthropic_provider_repair_prompt_warns_about_inner_quotes() -> None:
+    """The repair call explicitly forbids nested ASCII quotes."""
+
+    bad = (
+        '{"core_question":"x",'
+        '"audience_prior_knowledge":"让观众了解"糖"的历史",'
+        '"central_tension":"y",'
+        '"misconceptions":["m"],'
+        '"scope":["s"],'
+        '"excluded_topics":["e"]}'
+    )
+    client = FakeAnthropic(
+        [_message("first try totally broken"), _message(bad)]
+    )
+    provider = AnthropicProvider(client=client)
+    provider.generate(TopicDiagnosis, "s", "p", operation="diagnosis")
+    repair_msg = client.calls[1].kwargs["messages"][-1]["content"]
+    assert "「" in repair_msg and "」" in repair_msg
+
+
 def test_anthropic_provider_redacts_auth_in_errors(
     caplog: pytest.LogCaptureFixture,
 ) -> None:

@@ -46,6 +46,55 @@ def _strip_code_fence(text: str) -> str:
     return "\n".join(lines).strip()
 
 
+def _repair_inner_quotes(text: str) -> str:
+    """Replace unescaped ASCII ``"`` characters that fall *inside* a string value.
+
+    Common LLM failure: the model wraps a Chinese phrase in ``"..."`` while
+    already inside a JSON string, producing a payload that ``json.loads``
+    rejects with ``Expecting ','``. This walker tracks whether we are
+    inside a string and rewrites any inner ``"`` that is not a string
+    terminator (``,' '}' ']' ':'`` or end-of-input) as ``「`` / ``」``,
+    alternating so a single nested phrase reads naturally.
+    """
+
+    out: list[str] = []
+    in_string = False
+    bracket = "「"
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        # Honour JSON backslash escapes verbatim.
+        if ch == "\\" and i + 1 < n:
+            out.append(ch)
+            out.append(text[i + 1])
+            i += 2
+            continue
+        if ch == '"':
+            if not in_string:
+                in_string = True
+                out.append(ch)
+                i += 1
+                continue
+            # Look ahead past whitespace for a JSON terminator.
+            j = i + 1
+            while j < n and text[j] in " \t\n\r":
+                j += 1
+            if j >= n or text[j] in ",:}]":
+                in_string = False
+                out.append(ch)
+                i += 1
+                continue
+            # Inner quote: rewrite as Chinese corner bracket, alternating.
+            out.append(bracket)
+            bracket = "」" if bracket == "「" else "「"
+            i += 1
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 class AnthropicProvider(ModelProvider[BaseModel]):
     """Adapter around an ``anthropic.Anthropic``-shaped client.
 
@@ -112,8 +161,16 @@ class AnthropicProvider(ModelProvider[BaseModel]):
                 "content": (
                     "Your previous response did not satisfy the required "
                     "schema. Reply with ONLY a JSON object that matches the "
-                    f"schema. Previous response: {first_text!r}"
+                    "schema. Previous response: {first_text!r}"
                     + (f"\nValidation errors: {error_summary}" if error_summary else "")
+                    + (
+                        "\nJSON formatting rules:"
+                        "\n- The outer object must be valid JSON."
+                        "\n- String values must not contain unescaped ASCII"
+                        " double quotes. Use 「 and 」 (or full-width quotes)"
+                        " for any inner quotation. Example: "
+                        '\'{"note": "观众常听到「糖是战略物资」这种说法"}\'.'
+                    )
                 ),
             }
         ]
@@ -177,7 +234,15 @@ class AnthropicProvider(ModelProvider[BaseModel]):
         try:
             data = json.loads(body)
         except (TypeError, ValueError):
-            return None, None
+            # Fallback: the model may have wrapped a Chinese phrase in
+            # ASCII ``"..."`` inside a string value, breaking JSON.
+            # Walk the string replacing unescaped inner quotes with
+            # ``「 / 」`` and retry.
+            repaired = _repair_inner_quotes(body)
+            try:
+                data = json.loads(repaired)
+            except (TypeError, ValueError):
+                return None, None
         if not isinstance(data, dict):
             return None, None
         try:
