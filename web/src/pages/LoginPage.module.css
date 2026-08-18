@@ -1,0 +1,68 @@
+.shell {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  background: #0f1115;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  width: 320px;
+  padding: 28px 24px;
+  border: 1px solid #2a2f38;
+  border-radius: 10px;
+  background: #161a22;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+}
+
+.title {
+  margin: 0;
+  font-size: 20px;
+  color: #e6e8eb;
+  font-weight: 600;
+}
+
+.subtitle {
+  margin: 0 0 4px 0;
+  font-size: 13px;
+  color: #8a93a3;
+}
+
+.input {
+  padding: 10px 12px;
+  border: 1px solid #2a2f38;
+  border-radius: 6px;
+  background: #0f1115;
+  color: #e6e8eb;
+  font-size: 14px;
+  outline: none;
+}
+
+.input:focus {
+  border-color: #4a90e2;
+}
+
+.error {
+  margin: 0;
+  font-size: 13px;
+  color: #e25c5c;
+}
+
+.submit {
+  padding: 10px 12px;
+  border: none;
+  border-radius: 6px;
+  background: #4a90e2;
+  color: #fff;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.submit:disabled {
+  background: #2a3a4e;
+  cursor: not-allowed;
+}
