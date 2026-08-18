@@ -56,6 +56,12 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_TOPICS_PATH = Path("evaluation/topics.yaml")
 DEFAULT_RUBRIC_PATH = Path("evaluation/rubric.yaml")
+# The default fixtures directory doubles as the search seed location:
+# ``_load_search_seed`` looks for ``search_seed.json`` here. WHY: shipped
+# fixtures ship next to the model-response fixtures so the offline
+# harness has every recorded answer (model + search) in one tree, and
+# `--fixtures <dir>` lets CI point at an alternate bundle without
+# duplicating seed files.
 DEFAULT_FIXTURES_DIR = Path("tests/fixtures/provider_responses")
 DEFAULT_OUTPUT_DIR = Path("evaluation/runs")
 
@@ -97,16 +103,53 @@ CANNED_PHRASE_CHECK_NAMES = frozenset(
 
 
 class _NoopSearchProvider(SearchProvider):
-    """Stand-in search provider that returns an empty result for every
-    query. The evaluation harness intentionally does not call any real
-    search endpoint."""
+    """Stand-in search provider that returns recorded sources for known
+    queries and ``[]`` otherwise. The evaluation harness intentionally
+    does not call any real search endpoint.
 
-    def __init__(self) -> None:
+    The seeding pattern mirrors :meth:`FakeModelProvider.record`:
+    ``recorded`` is a ``claim -> [SourceDocument, ...]`` mapping that the
+    caller pre-loads from a JSON fixture. Queries not in ``recorded`` get
+    ``[]`` so the harness still exercises the "search returned nothing"
+    path on any claim the fixtures did not anticipate.
+    """
+
+    def __init__(
+        self, recorded: dict[str, list[SourceDocument]] | None = None
+    ) -> None:
         self.calls: list[str] = []
+        self.recorded: dict[str, list[SourceDocument]] = recorded or {}
 
     def search(self, query: str, *, limit: int = 5) -> list[SourceDocument]:
         self.calls.append(query)
-        return []
+        sources = self.recorded.get(query)
+        if sources is None:
+            return []
+        return list(sources[:limit])
+
+
+def _load_search_seed(
+    fixtures_dir: Path,
+) -> dict[str, list[SourceDocument]]:
+    """Load ``search_seed.json`` from ``fixtures_dir`` into a
+    ``claim -> [SourceDocument, ...]`` mapping.
+
+    Missing file → empty mapping (the harness still runs, every claim
+    scores 0 coverage, which surfaces as a threshold failure so the gap
+    is loud rather than silent). WHY: the search provider is the only
+    offline replacement for a real search backend; the recorded claims
+    here are what carries ``claim_verification_coverage`` above the
+    rubric's ``min_claim_verification_coverage: 1.0`` floor.
+    """
+
+    seed_path = fixtures_dir / "search_seed.json"
+    if not seed_path.exists():
+        return {}
+    payload = json.loads(seed_path.read_text(encoding="utf-8"))
+    seed: dict[str, list[SourceDocument]] = {}
+    for claim, docs in payload.items():
+        seed[claim] = [SourceDocument.model_validate(doc) for doc in docs]
+    return seed
 
 
 # ---------------------------------------------------------------------------
@@ -145,19 +188,6 @@ def _seed_provider(provider: FakeModelProvider, fixtures_dir: Path) -> None:
             provider.responses.setdefault(operation, []).append(response)
 
 
-def _seed_search_for_research(
-    research: dict[str, Any], search: _NoopSearchProvider
-) -> None:
-    """Record what the search provider should have returned for any
-    high-risk claims we know about. The stub never returns anything; the
-    recorder is here so the harness's verification coverage field can
-    mirror what a real provider would have seen."""
-
-    for card in research.get("fact_cards", []) or []:
-        if card.get("risk") != "ordinary":
-            search.calls.append(card.get("claim", ""))
-
-
 def _new_engine(db_path: Path):
     engine = create_engine(
         f"sqlite+pysqlite:///{db_path}",
@@ -182,7 +212,7 @@ def _run_pipeline(
     factory = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
 
     provider = FakeModelProvider()
-    search = _NoopSearchProvider()
+    search = _NoopSearchProvider(recorded=_load_search_seed(fixtures_dir))
     _seed_provider(provider, fixtures_dir)
     set_default_provider(provider)
 

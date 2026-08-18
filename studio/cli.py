@@ -34,6 +34,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     evaluate_cmd.add_argument("--dataset", type=str, default=str(DEFAULT_TOPICS_PATH))
     evaluate_cmd.add_argument("--rubric", type=str, default=str(DEFAULT_RUBRIC_PATH))
+    # ``--fixtures`` doubles as the search-seed location: ``_load_search_seed``
+    # looks for ``search_seed.json`` under this directory so the offline
+    # harness can answer high-risk claim lookups without a real backend.
+    # WHY: keeping the seed next to the model-response fixtures means CI
+    # can swap both at once with a single ``--fixtures`` override.
     evaluate_cmd.add_argument("--fixtures", type=str, default=str(DEFAULT_FIXTURES_DIR))
     evaluate_cmd.add_argument("--output", type=str, default=str(DEFAULT_OUTPUT_DIR))
 

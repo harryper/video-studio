@@ -24,8 +24,10 @@ import pytest
 
 from studio.evaluation import (
     DEFAULT_OUTPUT_DIR,
+    _NoopSearchProvider,
     _canned_phrase_ratio,
     _check_thresholds,
+    _load_search_seed,
     _one_draft_distance,
     _recent_structure_similarity,
     _score_metric,
@@ -33,6 +35,7 @@ from studio.evaluation import (
     evaluate,
     main,
 )
+from studio.schemas import SourceDocument
 
 FIXTURES_DIR = Path("tests/fixtures/provider_responses")
 
@@ -430,10 +433,10 @@ def test_main_exits_one_when_any_topic_fails_thresholds(
     envelope = json.loads(
         (out_dir / "results.json").read_text(encoding="utf-8")
     )
-    # The CLI exit code must equal whether every topic passed; today the
-    # recorded valid fixtures don't satisfy every gate (claim
-    # verification needs a non-noop search), so the run currently exits 1.
-    # When fixtures are upgraded, this assert still holds either way.
+    # The CLI exit code must equal whether every topic passed. Shipped
+    # fixtures + shipped seed + shipped rubric all pass today, so the
+    # CLI exits 0; if a future fixture breaks a gate the assert still
+    # captures the regression.
     if envelope["aggregate_pass_rate"] < 1.0:
         assert rc == 1
     else:
@@ -463,12 +466,178 @@ def test_main_exits_zero_when_aggregate_pass_rate_is_full(
     envelope = json.loads(
         (tmp_path / "out" / "results.json").read_text(encoding="utf-8")
     )
-    if envelope["aggregate_pass_rate"] == 1.0:
-        assert rc == 0
-    else:
-        # Recorded fixtures don't satisfy every gate today — confirm the
-        # CLI surfaces that as exit 1, not exit 0.
-        assert rc == 1
+    assert envelope["aggregate_pass_rate"] == 1.0
+    assert rc == 0
+
+
+# ---------------------------------------------------------------------------
+# Fix A/B/C — seeded search provider + shipped-fixtures closure
+# ---------------------------------------------------------------------------
+
+
+def test_noop_search_returns_recorded_sources_for_seeded_claims() -> None:
+    """Recorded claims return the seeded sources in order."""
+
+    doc = SourceDocument(
+        title="t", url="https://x/y", snippet="s", publisher="p"
+    )
+    provider = _NoopSearchProvider(recorded={"foo": [doc]})
+    assert provider.search("foo") == [doc]
+
+
+def test_noop_search_returns_empty_for_unseeded_queries() -> None:
+    """Unseeded queries stay empty so the harness still exercises the
+    'search returned nothing' path on any claim the fixtures missed."""
+
+    provider = _NoopSearchProvider(
+        recorded={"foo": [SourceDocument(title="t", url="u", snippet="s", publisher="p")]}
+    )
+    assert provider.search("bar") == []
+
+
+def test_noop_search_respects_limit() -> None:
+    """``search`` truncates the recorded list to ``limit``."""
+
+    docs = [
+        SourceDocument(title=f"t{i}", url=f"https://x/{i}", snippet="s", publisher="p")
+        for i in range(5)
+    ]
+    provider = _NoopSearchProvider(recorded={"foo": docs})
+    assert len(provider.search("foo", limit=2)) == 2
+    assert len(provider.search("foo", limit=10)) == 5
+    assert provider.search("foo", limit=0) == []
+
+
+def test_load_search_seed_returns_empty_dict_when_file_missing(
+    tmp_path: Path,
+) -> None:
+    """Missing seed file → empty mapping (the gap surfaces as a threshold
+    failure, not a hard exception)."""
+
+    assert _load_search_seed(tmp_path) == {}
+
+
+def test_load_search_seed_parses_fixture_into_source_documents() -> None:
+    """Shipped ``search_seed.json`` parses into ``SourceDocument`` instances."""
+
+    seed = _load_search_seed(FIXTURES_DIR)
+    # One entry per high_risk_claim from research_valid.json.
+    assert "西瓜含糖量约 6-8%" in seed
+    assert "甘蔗含糖量约 13-15%" in seed
+    assert "西瓜收获周期短，亩产约 3000 公斤" in seed
+    for claim, docs in seed.items():
+        assert len(docs) >= 2, f"need ≥2 sources per claim, got {len(docs)} for {claim!r}"
+        assert all(isinstance(doc, SourceDocument) for doc in docs)
+
+
+def test_evaluate_minimal_fixtures_dir_yields_full_coverage(
+    tmp_path: Path,
+) -> None:
+    """End-to-end: a fixtures dir built from a minimal ``research_valid``
+    + matching ``search_seed`` returns ``claim_verification_coverage=1.0``.
+
+    Copies the shipped fixtures to a tmp dir so every other stage still
+    has its answers, then overrides ``research_valid.json`` + adds
+    ``search_seed.json``. The minimal research has one high-risk claim
+    with two seeded sources, so the coverage denominator is 1 and the
+    numerator is 1.
+    """
+
+    # Copy shipped fixtures to a tmp dir so the rest of the pipeline
+    # (diagnosis, pitches, narrative, draft, rewrite, speech) still has
+    # its answers; only research + search are overridden.
+    import shutil
+
+    fixtures_dir = tmp_path / "fixtures"
+    shutil.copytree(FIXTURES_DIR, fixtures_dir)
+
+    minimal_research = {
+        "operation": "research",
+        "responses": [
+            {
+                "candidate_facts": ["x西瓜糖度"],
+                "high_risk_claims": ["x西瓜糖度"],
+                "mechanisms": ["m"],
+                "people_events": [],
+                "concrete_scenes": [],
+                "visual_details": [],
+                "uncertainties": [],
+            },
+            {
+                "classifications": [
+                    {
+                        "claim": "x西瓜糖度",
+                        "risk": "number",
+                        "softened_claim": None,
+                        "confidence": 0.9,
+                        "narrative_value": "v",
+                        "payoff_critical": True,
+                    }
+                ]
+            },
+        ],
+    }
+    (fixtures_dir / "research_valid.json").write_text(
+        json.dumps(minimal_research, ensure_ascii=False), encoding="utf-8"
+    )
+
+    seed = {
+        "x西瓜糖度": [
+            {"title": "t1", "url": "https://x/1", "snippet": "s", "publisher": "p"},
+            {"title": "t2", "url": "https://x/2", "snippet": "s", "publisher": "p"},
+        ]
+    }
+    (fixtures_dir / "search_seed.json").write_text(
+        json.dumps(seed, ensure_ascii=False), encoding="utf-8"
+    )
+
+    topics = tmp_path / "topics.yaml"
+    topics.write_text(
+        json.dumps(
+            {"topics": [{"id": "t-min", "topic": "西瓜甜度", "category": "自然机制"}]},
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    out_dir = tmp_path / "out"
+    evaluate(
+        topics_path=topics,
+        rubric_path=Path("evaluation/rubric.yaml"),
+        fixtures_dir=fixtures_dir,
+        output_dir=out_dir,
+    )
+
+    envelope = json.loads((out_dir / "results.json").read_text(encoding="utf-8"))
+    assert envelope["results"][0]["claim_verification_coverage"] == 1.0
+
+
+def test_cli_exits_zero_on_shipped_fixtures(tmp_path: Path) -> None:
+    """Closing test: the shipped fixtures + shipped rubric + shipped
+    search_seed produce ``aggregate_pass_rate=1.0`` so the CLI exits 0.
+
+    This is the exact gap flagged in the Task 13 fix report — before
+    the seeded search provider, every topic reported coverage 0.0 and
+    the CLI exited 1.
+    """
+
+    rc = main(
+        [
+            "--dataset",
+            str(Path("evaluation/topics.yaml")),
+            "--rubric",
+            str(Path("evaluation/rubric.yaml")),
+            "--fixtures",
+            str(FIXTURES_DIR),
+            "--output",
+            str(tmp_path / "out"),
+        ]
+    )
+    assert rc == 0
+    envelope = json.loads(
+        (tmp_path / "out" / "results.json").read_text(encoding="utf-8")
+    )
+    assert envelope["aggregate_pass_rate"] == 1.0
 
 
 # Silence unused import warning for the project's reference constant.

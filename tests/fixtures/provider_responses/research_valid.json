@@ -53,15 +53,15 @@
         },
         {
           "claim": "西瓜糖分主要为葡萄糖和果糖",
-          "risk": "absolute",
-          "softened_claim": "西瓜糖分以葡萄糖和果糖为主",
+          "risk": "ordinary",
+          "softened_claim": null,
           "confidence": 0.6,
           "narrative_value": "结晶难度",
           "payoff_critical": false
         },
         {
           "claim": "1872 年挑战者号考察海洋盐度",
-          "risk": "date",
+          "risk": "ordinary",
           "softened_claim": null,
           "confidence": 0.7,
           "narrative_value": "无关背景",

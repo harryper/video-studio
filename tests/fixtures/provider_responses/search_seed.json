@@ -1,0 +1,50 @@
+{
+  "西瓜含糖量约 6-8%": [
+    {
+      "title": "西瓜糖度检测报告 2024",
+      "url": "https://example.org/reports/watermelon-brix-2024",
+      "snippet": "测得 6-8% 糖度，主要为葡萄糖与果糖",
+      "publisher": "农业检测中心",
+      "published_at": "2024-06-12"
+    },
+    {
+      "title": "西瓜营养成分综述",
+      "url": "https://example.org/reports/watermelon-nutrition",
+      "snippet": "糖度区间 6-8%，符合常见栽培西瓜的甜度范围",
+      "publisher": "果品研究所",
+      "published_at": "2023-09-30"
+    }
+  ],
+  "甘蔗含糖量约 13-15%": [
+    {
+      "title": "甘蔗糖分年度检测",
+      "url": "https://example.org/reports/sugarcane-brix",
+      "snippet": "甘蔗榨汁糖度 13-15%，蔗糖占比超过 80%",
+      "publisher": "糖业研究院",
+      "published_at": "2024-03-22"
+    },
+    {
+      "title": "蔗糖原料成分手册",
+      "url": "https://example.org/handbooks/sugarcane-composition",
+      "snippet": "甘蔗含糖量长期稳定在 13-15% 之间",
+      "publisher": "制糖工艺手册编委会",
+      "published_at": "2022-11-08"
+    }
+  ],
+  "西瓜收获周期短，亩产约 3000 公斤": [
+    {
+      "title": "西瓜亩产与种植周期统计",
+      "url": "https://example.org/reports/watermelon-yield",
+      "snippet": "平均亩产约 3000 公斤，生长周期 70-90 天",
+      "publisher": "农业农村部信息中心",
+      "published_at": "2024-04-15"
+    },
+    {
+      "title": "西瓜高产栽培技术手册",
+      "url": "https://example.org/handbooks/watermelon-cultivation",
+      "snippet": "标准栽培条件下，亩产可达 2800-3200 公斤",
+      "publisher": "中国园艺学会",
+      "published_at": "2023-12-04"
+    }
+  ]
+}
