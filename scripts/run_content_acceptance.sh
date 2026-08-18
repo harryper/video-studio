@@ -19,21 +19,22 @@ cd "${REPO_ROOT}"
 
 MODE="offline"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
-EXTRA_ARGS=()
 
 usage() {
   cat <<EOF
 Usage: $(basename "$0") [--offline] [--online] [--run-id ID] [--help]
 
   --offline       默认；执行 pytest + npm test/build + evaluate + 写 summary.md
-  --online        额外跑一次 24 主题线上生成（必须配合 STUDIO_ONLINE_AUTHORIZED=1）
+  --online        额外跑一次 24 主题线上生成（必须配合 STUDIO_ONLINE_AUTHORIZED=1；
+                  当前实现尚未接好，进入此分支即以 exit 2 退出并指向 README.next.md
+                  'Online acceptance' 的手工运维流程）
   --run-id ID     覆盖默认时间戳作为 evaluation/results/<run-id>/ 的目录名
   --help          打印此帮助
 
 退出码：
   0  全部门禁通过
   1  pytest / npm test / build / evaluate 任一失败
-  2  --online 但缺少 STUDIO_ONLINE_AUTHORIZED=1
+  2  --online 但缺少 STUDIO_ONLINE_AUTHORIZED=1，或 --online 的 24 主题跑批尚未接入
 EOF
 }
 
@@ -64,12 +65,7 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ "${MODE}" == "online" && "${STUDIO_ONLINE_AUTHORIZED:-0}" != "1" ]]; then
-  echo "ERROR: --online requires STUDIO_ONLINE_AUTHORIZED=1 in the environment" >&2
-  echo "       this guard prevents accidental LLM credit usage during CI runs" >&2
-  exit 2
-fi
-
+# Setup — runs before any gate so the online guard can record a traceable step.
 RESULTS_DIR="${REPO_ROOT}/evaluation/results/${RUN_ID}"
 mkdir -p "${RESULTS_DIR}"
 echo "acceptance run id: ${RUN_ID}"
@@ -83,6 +79,25 @@ record_step() {
   # $1 = step name; $2 = exit code; $3 = optional notes
   printf '%s\t%s\t%s\n' "$1" "$2" "${3:-}" >> "${RESULTS_DIR}/steps.tsv"
 }
+
+# ---------------------------------------------------------------------------
+# Online guard (must come BEFORE any LLM-touching gate)
+# ---------------------------------------------------------------------------
+# WHY: --online consumes real LLM credits, so we require an explicit env var to
+# even consider entering the branch. We emit a traceable FAIL step (not a PASS)
+# and exit 2 because the 24-topic live generator is not yet wired — that work
+# belongs to the cutover plan, not the Content Studio Stop Gate (Task 14).
+if [[ "${MODE}" == "online" ]]; then
+  if [[ "${STUDIO_ONLINE_AUTHORIZED:-0}" != "1" ]]; then
+    echo "ERROR: --online requires STUDIO_ONLINE_AUTHORIZED=1 in the environment" >&2
+    echo "       this guard prevents accidental LLM credit usage during CI runs" >&2
+    exit 2
+  fi
+  record_step "online" 1 "online generation deferred — manual operator flow; see README.next.md 'Online acceptance'"
+  echo "ERROR: online 24-topic generation is not yet wired" >&2
+  echo "       see README.next.md 'Online acceptance' for the manual operator flow" >&2
+  exit 2
+fi
 
 # ---------------------------------------------------------------------------
 # Gate 1: pytest
@@ -168,16 +183,6 @@ else
   record_step "evaluate" 1
   cat "${RESULTS_DIR}/evaluate.log" >&2
   exit 1
-fi
-
-# ---------------------------------------------------------------------------
-# Optional: online acceptance (gated)
-# ---------------------------------------------------------------------------
-if [[ "${MODE}" == "online" ]]; then
-  log "online mode requested: STUDY=STUDIO_ONLINE_AUTHORIZED=1 confirmed"
-  log "online acceptance runs are NOT implemented in this script yet"
-  log "manual operator must run the worker against the live API; see README.next.md"
-  record_step "online" 0 "deferred — see README.next.md"
 fi
 
 # ---------------------------------------------------------------------------

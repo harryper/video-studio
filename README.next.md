@@ -34,6 +34,15 @@ bash scripts/run_content_acceptance.sh --offline
 STUDIO_ONLINE_AUTHORIZED=1 bash scripts/run_content_acceptance.sh --online
 ```
 
+### Online acceptance
+
+Task 14 尚未把 24 主题线上生成接入到 `run_content_acceptance.sh`；脚本进入 `--online` 分支会立即以 exit 2 退出并指向本节，不会伪造 PASS。Operator 需要走下列手工流程：
+
+1. 设置 `STUDIO_ONLINE_AUTHORIZED=1` 以及模型 / 搜索供应商的密钥（详见 `docs/operations/content-studio.md`）。
+2. 在容器外或 worker 容器内手动调用 `uv run python -m studio.worker_main`（或 `docker compose -f docker-compose.next.yml up -d content-studio-worker`），针对 `evaluation/topics.yaml` 的 24 个主题跑完整 8 stage。
+3. 生成的盲评产物导出到 `evaluation/results/<run-id>/online/`，并把 envelope 放在 `evaluation/results/<run-id>/online/results.json`。
+4. 把步骤文件和 envelope 路径记录在 `evaluation/results/<run-id>/summary.md` 的 `## Online` 段落下方。
+
 ## 端口与认证
 
 * Web：10000（绑定到 `0.0.0.0`）。
