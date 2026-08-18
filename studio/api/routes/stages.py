@@ -8,13 +8,12 @@ setter keeps tests offline without an app-factory argument.
 
 from __future__ import annotations
 
-from collections.abc import Generator
-
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session
 
-from studio import db as studio_db
+from studio.api.auth import require_csrf, require_session
+from studio.api.dependencies import get_session
 from studio.artifacts import ArtifactRepository
 from studio.content.review import (
     NewerDraftExists,
@@ -33,7 +32,11 @@ from studio.schemas import (
 )
 from studio.workflow import accept_pitch, current_pitch_set
 
-router = APIRouter(prefix="/api/projects", tags=["stages"])
+router = APIRouter(
+    prefix="/api/projects",
+    tags=["stages"],
+    dependencies=[Depends(require_session)],
+)
 
 _default_provider: ModelProvider | None = None
 
@@ -49,22 +52,15 @@ def get_default_provider() -> ModelProvider | None:
     return _default_provider
 
 
-def get_session() -> Generator[Session, None, None]:
-    factory = sessionmaker(
-        bind=studio_db.get_engine(), autoflush=False, expire_on_commit=False
-    )
-    session = factory()
-    try:
-        yield session
-    finally:
-        session.close()
-
-
 class AcceptRequest(BaseModel):
     edited_pitch: StoryPitch | None = None
 
 
-@router.post("/{project_id}/pitches/generate", status_code=202)
+@router.post(
+    "/{project_id}/pitches/generate",
+    status_code=202,
+    dependencies=[Depends(require_csrf)],
+)
 def generate_pitches_route(
     project_id: str, session: Session = Depends(get_session)
 ) -> dict[str, str]:
@@ -94,7 +90,11 @@ def get_pitches_route(
     return found[1].model_dump(mode="json")
 
 
-@router.post("/{project_id}/pitches/{pitch_id}/accept", status_code=201)
+@router.post(
+    "/{project_id}/pitches/{pitch_id}/accept",
+    status_code=201,
+    dependencies=[Depends(require_csrf)],
+)
 def accept_pitch_route(
     project_id: str,
     pitch_id: str,
@@ -186,11 +186,15 @@ def _load_paragraph_fact_card_ids(
     return {}
 
 
-@router.post("/{project_id}/drafts/{draft_artifact_id}/rewrite", status_code=201)
+@router.post(
+    "/{project_id}/drafts/{draft_artifact_id}/rewrite",
+    status_code=201,
+    dependencies=[Depends(require_csrf)],
+)
 def rewrite_route(
     project_id: str,
     draft_artifact_id: str,
-    session: Session = Depends(get_session),  # noqa: B008 — FastAPI dependency
+    session: Session = Depends(get_session),
 ) -> dict[str, str]:
     repo = ArtifactRepository(session)
     draft_artifact = repo.get(draft_artifact_id)
@@ -227,11 +231,15 @@ def rewrite_route(
     return {"artifact_id": artifact.id}
 
 
-@router.post("/{project_id}/drafts/{draft_artifact_id}/approve", status_code=201)
+@router.post(
+    "/{project_id}/drafts/{draft_artifact_id}/approve",
+    status_code=201,
+    dependencies=[Depends(require_csrf)],
+)
 def approve_route(
     project_id: str,
     draft_artifact_id: str,
-    session: Session = Depends(get_session),  # noqa: B008 — FastAPI dependency
+    session: Session = Depends(get_session),
 ) -> dict[str, str]:
     try:
         artifact = approve_draft(project_id, draft_artifact_id, session)

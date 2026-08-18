@@ -32,3 +32,9 @@ testpaths = ["tests"]
 
 [tool.ruff]
 target-version = "py312"
+
+[tool.ruff.lint.per-file-ignores]
+# FastAPI uses ``session: Session = Depends(get_session)`` in argument
+# defaults by convention; the alternative (singletons + ``Annotated``)
+# would touch every route for no functional gain.
+"studio/api/routes/*.py" = ["B008"]

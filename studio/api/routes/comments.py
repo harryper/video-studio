@@ -14,13 +14,12 @@ mounted under :mod:`studio.api.routes.stages`.
 
 from __future__ import annotations
 
-from collections.abc import Generator
-
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.orm import Session
 
-from studio import db as studio_db
+from studio.api.auth import require_csrf, require_session
+from studio.api.dependencies import get_session
 from studio.artifacts import ArtifactRepository
 from studio.content.review import (
     create_comment,
@@ -29,18 +28,11 @@ from studio.content.review import (
 )
 from studio.schemas import DraftRevision, EditorialComment
 
-router = APIRouter(prefix="/api/projects", tags=["comments"])
-
-
-def get_session() -> Generator[Session, None, None]:
-    factory = sessionmaker(
-        bind=studio_db.get_engine(), autoflush=False, expire_on_commit=False
-    )
-    session = factory()
-    try:
-        yield session
-    finally:
-        session.close()
+router = APIRouter(
+    prefix="/api/projects",
+    tags=["comments"],
+    dependencies=[Depends(require_session)],
+)
 
 
 class CreateCommentRequest(BaseModel):
@@ -72,13 +64,15 @@ def _load_paragraph_text(
 
 
 @router.post(
-    "/{project_id}/drafts/{draft_artifact_id}/comments", status_code=201
+    "/{project_id}/drafts/{draft_artifact_id}/comments",
+    status_code=201,
+    dependencies=[Depends(require_csrf)],
 )
 def create_comment_route(
     project_id: str,
     draft_artifact_id: str,
     body: CreateCommentRequest,
-    session: Session = Depends(get_session),  # noqa: B008 — FastAPI dependency
+    session: Session = Depends(get_session),
 ) -> dict[str, object]:
     paragraph_text = _load_paragraph_text(
         session, project_id, draft_artifact_id, body.paragraph_id
@@ -107,7 +101,7 @@ def create_comment_route(
 def list_comments_route(
     project_id: str,
     draft_artifact_id: str,
-    session: Session = Depends(get_session),  # noqa: B008 — FastAPI dependency
+    session: Session = Depends(get_session),
 ) -> list[dict[str, object]]:
     comments: list[EditorialComment] = list_comments(
         project_id, draft_artifact_id, session

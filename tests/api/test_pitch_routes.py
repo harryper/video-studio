@@ -23,7 +23,6 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
-from studio.api.app import create_app
 from studio.artifacts import ArtifactRepository
 from studio.jobs import Stage
 from studio.models import Project, StageJob
@@ -31,8 +30,8 @@ from studio.schemas import StoryPitch, StoryPitchSet
 
 
 @pytest.fixture
-def client(isolated_database: str) -> TestClient:
-    return TestClient(create_app())
+def client(authed_client: TestClient) -> TestClient:
+    return authed_client
 
 
 def _pitch(n: int) -> StoryPitch:

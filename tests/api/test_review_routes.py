@@ -18,7 +18,6 @@ from fastapi.testclient import TestClient
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from studio.api.app import create_app
 from studio.api.routes.stages import set_default_provider
 from studio.artifacts import ArtifactRepository
 from studio.models import EditorialComment as OrmEditorialComment
@@ -120,8 +119,8 @@ def _plan() -> NarrativePlan:
 
 
 @pytest.fixture
-def client(isolated_database: str) -> TestClient:
-    return TestClient(create_app())
+def client(authed_client: TestClient) -> TestClient:
+    return authed_client
 
 
 @pytest.fixture

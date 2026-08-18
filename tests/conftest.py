@@ -10,6 +10,7 @@ from __future__ import annotations
 from collections.abc import Generator
 
 import pytest
+from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session, sessionmaker
 
 from studio import db as studio_db
@@ -102,3 +103,61 @@ class FakeSearchProvider(SearchProvider):
 @pytest.fixture
 def fake_search_provider() -> FakeSearchProvider:
     return FakeSearchProvider()
+
+
+@pytest.fixture
+def authed_client(
+    isolated_database: str, monkeypatch: pytest.MonkeyPatch
+) -> TestClient:
+    """A ``TestClient`` that has already authenticated via ``POST /api/session``.
+
+    Sets ``STUDIO_CONTENT_STUDIO_PASSWORD`` before building the client so the
+    :class:`~studio.config.Settings` instance constructed inside the auth
+    dependency picks up the test password. The CSRF token returned by the
+    login response is captured and auto-injected as ``X-CSRF-Token`` on
+    every mutating call (``post``/``put``/``patch``/``delete``), so existing
+    tests that use ``client.post(...)`` keep working unchanged.
+    """
+
+    from studio.api.app import create_app
+
+    class AuthedTestClient(TestClient):
+        """Thin wrapper that injects the CSRF header on mutating calls."""
+
+        def __init__(self, csrf_token: str, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._csrf_token = csrf_token
+
+        def _with_csrf(self, headers: dict[str, str] | None) -> dict[str, str]:
+            merged = dict(headers or {})
+            merged.setdefault("X-CSRF-Token", self._csrf_token)
+            return merged
+
+        def post(self, url, **kwargs):
+            kwargs["headers"] = self._with_csrf(kwargs.get("headers"))
+            return super().post(url, **kwargs)
+
+        def put(self, url, **kwargs):
+            kwargs["headers"] = self._with_csrf(kwargs.get("headers"))
+            return super().put(url, **kwargs)
+
+        def patch(self, url, **kwargs):
+            kwargs["headers"] = self._with_csrf(kwargs.get("headers"))
+            return super().patch(url, **kwargs)
+
+        def delete(self, url, **kwargs):
+            kwargs["headers"] = self._with_csrf(kwargs.get("headers"))
+            return super().delete(url, **kwargs)
+
+    monkeypatch.setenv("STUDIO_CONTENT_STUDIO_PASSWORD", "test-password")
+    client = AuthedTestClient("", create_app())
+    response = client.post("/api/session", json={"password": "test-password"})
+    assert response.status_code == 200, response.text
+    client._csrf_token = response.json()["csrf_token"]
+    return client
+
+
+@pytest.fixture
+def csrf_token(authed_client) -> str:
+    """Convenience accessor for ``authed_client._csrf_token``."""
+    return authed_client._csrf_token
